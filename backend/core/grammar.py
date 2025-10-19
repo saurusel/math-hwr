@@ -5,7 +5,7 @@ from typing import List, Union
 
 TOK_DIGITS = list("0123456789")
 TOK_VARS = ["x","y","z"]
-OP_ARITH = ["+","-","*","÷"]  # arithmetic only
+OP_ARITH = ["+","-","*","÷"]
 OP_EQ = "="
 
 @dataclass
@@ -25,7 +25,7 @@ class BinOp:
 @dataclass
 class Pow:
     base: "Expr"
-    exp: "Expr"
+    exp: "Expr"   # now ALWAYS a single symbol (digit or var)
 
 @dataclass
 class Frac:
@@ -41,6 +41,9 @@ def random_number(max_len: int = 3) -> Num:
         s = str(random.randint(1,9)) + s[1:]
     return Num(s)
 
+def random_digit() -> Num:
+    return Num(random.choice(TOK_DIGITS))
+
 def random_var() -> Var:
     return Var(random.choice(TOK_VARS))
 
@@ -48,16 +51,16 @@ def atom(depth: int) -> Expr:
     return random_number() if random.random() < 0.6 else random_var()
 
 def maybe_pow(base: Expr, depth: int) -> Expr:
-    if depth <= 0: return base
+    # New rule: exponent is strictly ONE symbol (digit or variable)
+    if depth <= 0:
+        return base
     if random.random() < 0.25:
-        # exponent is arithmetic-only expression (no '=')
-        exp = arith_expr(depth-1)
+        exp: Expr = random_var() if random.random() < 0.5 else random_digit()
         return Pow(base=base, exp=exp)
     return base
 
 def frac_or_term(depth: int) -> Expr:
     if depth > 0 and random.random() < 0.18:
-        # both parts are arithmetic-only (no '=')
         return Frac(num=arith_expr(depth-1), den=arith_expr(depth-1))
     base = atom(depth)
     return maybe_pow(base, depth)
@@ -66,28 +69,22 @@ def chain_ops(left: Expr, depth: int, max_additional: int) -> Expr:
     node = left
     t = random.randint(0, max_additional)
     for _ in range(t):
-        op = random.choice(OP_ARITH)  # explicit operator; prevents implicit concatenation like '5x'
+        op = random.choice(OP_ARITH)
         right = frac_or_term(depth)
         node = BinOp(op=op, left=node, right=right)
     return node
 
 def arith_expr(depth: int) -> Expr:
-    # never starts/ends with op by construction
     return chain_ops(frac_or_term(depth), depth, max_additional=2)
 
 def equality_expr(depth: int) -> Expr:
-    # exactly one '=' at top-level: left and right are arithmetic expressions
     left = arith_expr(depth)
     right = arith_expr(depth)
     return BinOp(op=OP_EQ, left=left, right=right)
 
 def gen_expression(max_depth: int = 2, eq_prob: float = 0.25) -> Expr:
-    # choose either arithmetic-only or equation (single '=')
-    if random.random() < eq_prob:
-        return equality_expr(max_depth)
-    return arith_expr(max_depth)
+    return equality_expr(max_depth) if random.random() < eq_prob else arith_expr(max_depth)
 
-# ---- serialization into linear token list ----
 def serialize(expr: Expr) -> List[str]:
     if isinstance(expr, Num):
         return list(expr.s)
@@ -96,9 +93,8 @@ def serialize(expr: Expr) -> List[str]:
     if isinstance(expr, BinOp):
         return serialize(expr.left) + [expr.op] + serialize(expr.right)
     if isinstance(expr, Pow):
-        # '^ ( ... )' — exponent always parenthesized in tokens
+        # Keep canonical '^ ( token )' even though token is single symbol
         return serialize(expr.base) + ["^","("] + serialize(expr.exp) + [")"]
     if isinstance(expr, Frac):
-        # 'frac ( { A } , { B } )'
         return ["f","r","a","c","(","{"] + serialize(expr.num) + ["}",",","{"] + serialize(expr.den) + ["}",")"]
     raise TypeError("unknown expr type")
