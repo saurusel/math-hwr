@@ -1,0 +1,21 @@
+model: crnn_ctc
+backbone: resnet18
+seq:
+  type: bilstm
+  layers: 2
+  hidden: 256
+optimizer:
+  name: adamw
+  lr: 0.001
+  weight_decay: 0.01
+scheduler:
+  name: cosine
+  warmup_pct: 0.02
+train:
+  epochs: 20
+  batch_size: 128
+  amp: true
+  checkpoint_minutes: 5
+eval:
+  beam_width: 5
+  ctc_merge_repeats: true

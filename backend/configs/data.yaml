@@ -1,0 +1,17 @@
+seed: 20251019
+img_h: 64
+img_w_max: 512
+max_depth: 2
+len_min: 5
+len_max: 20
+train_dir: data/synth/train
+val_dir:   data/synth/val
+test_dir:  data/synth/test
+hand_val_dir: data/hand/val
+hand_test_dir: data/hand/test
+augment:
+  affine: {prob: 0.7, rotate: [-3, 3], shear: [-4, 4], scale: [0.95, 1.05]}
+  blur:   {prob: 0.3, k: [3,5]}
+  noise:  {prob: 0.5, sigma: [2,8]}
+  elastic:{prob: 0.2, alpha: [20,40], sigma: [4,6]}
+  thickness:{prob: 0.5, delta: [-1,1]}

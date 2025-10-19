@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+# Data & runs
+data/
+runs/
+*.pt
+*.db
+*.jsonl
+*.png
+*.jpg
+*.jpeg
+*.bmp
+# Node
+frontend/node_modules/
+dist/

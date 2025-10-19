@@ -1,0 +1,25 @@
+model: vit_decoder
+encoder:
+  name: vit_tiny
+  patch: 16
+  dim: 192
+decoder:
+  layers: 4
+  dim: 384
+  heads: 6
+  dropout: 0.1
+optimizer:
+  name: adamw
+  lr: 0.0003
+  weight_decay: 0.01
+scheduler:
+  name: cosine
+  warmup_pct: 0.04
+train:
+  epochs: 20
+  batch_size: 64
+  amp: true
+  checkpoint_minutes: 5
+decode:
+  beam: 5
+  max_len: 64
