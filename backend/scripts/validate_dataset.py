@@ -1,17 +1,18 @@
 # --- path bootstrap ---
-import os, sys, json, re
+import os, sys, json
 from typing import List
-
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _ROOT not in sys.path: sys.path.insert(0, _ROOT)
 
-OPS = {"+","-","*","÷","="}
+OPS = {"+","-","·","*","÷","="}
 
 def read_jsonl(path):
-    with open(path, "r", encoding="utf-8") as f:
+    import json
+    with open(path, "r", encoding="utf-8-sig") as f:  # <-- важно: utf-8-sig
         for line in f:
-            if line.strip():
-                yield json.loads(line)
+            s = line.strip()
+            if s:
+                yield json.loads(s)
 
 def tokens_ok(tokens: List[str]) -> bool:
     if tokens[0] in OPS or tokens[-1] in OPS:
