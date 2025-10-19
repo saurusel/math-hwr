@@ -6,8 +6,12 @@
 
     $ErrorActionPreference = "Stop"
 
-    Write-Host "==> Creating venv at $VenvPath"
-    & $PyCmd -m venv $VenvPath
+    if (Test-Path $VenvPath) {
+        Write-Host "==> Venv already exists at $VenvPath (skipping creation)"
+    } else {
+        Write-Host "==> Creating venv at $VenvPath"
+        & $PyCmd -m venv $VenvPath
+    }
 
     $Activate = Join-Path $VenvPath "Scripts\Activate.ps1"
     . $Activate
@@ -21,7 +25,6 @@
     Write-Host "==> Installing project requirements"
     python -m pip install -r (Join-Path "backend" "requirements.txt")
 
-    # --- GPU Smoke Test (PowerShell-friendly) ---
     $code = @"
 import torch
 print('torch:', torch.__version__)
