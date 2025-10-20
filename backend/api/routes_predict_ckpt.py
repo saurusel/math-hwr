@@ -244,6 +244,7 @@ def predict2(req: PredictRequest):
         "invert": req.data.invert,
         "pad_mode": req.data.pad_mode,
         "decoder": req.decode.type,
+        "decode": { "type": "greedy" },
         "beam_width": req.decode.beam_width if req.decode.type == "beam" else None,
         "tokens": tokens,
         "text": s,
