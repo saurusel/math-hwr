@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from .routes_train import RUNS
 
 router = APIRouter()
@@ -15,6 +15,20 @@ def list_runs():
             "steps_done": r.get("step", 0),
         })
     return {"runs": out}
+
+@router.get("/runs/{run_id}")
+def run_detail(run_id: str):
+    r = RUNS.get(run_id)
+    if not r:
+        raise HTTPException(404, "run not found")
+    # return minimal safe info
+    return {
+        "run_id": run_id,
+        "status": r["status"],
+        "epoch": r.get("epoch", 0),
+        "step": r.get("step", 0),
+        "last_error": r.get("last_error")
+    }
 
 @router.get("/checkpoints")
 def list_checkpoints():

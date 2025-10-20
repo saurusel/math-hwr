@@ -15,6 +15,10 @@ async def stream(ws: WebSocket, run_id: str = Query(...)):
     run["queues"].add(queue)
 
     await ws.send_json({"run_id": run_id, "event": "connected", "status": run["status"]})
+    # if already in error, surface last_error immediately
+    if run.get("status") == "error" and run.get("last_error"):
+        await ws.send_json({"run_id": run_id, "event": "error", "message": run["last_error"][:2000]})
+
     try:
         while True:
             msg = await queue.get()
