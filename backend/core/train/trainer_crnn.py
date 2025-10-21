@@ -13,6 +13,7 @@ from ..tokenizer import TOKEN_LIST
 from ..metrics import cer as cer_fn, wer as wer_fn
 from ..parser import is_valid_token_stream
 from ..decoders.ctc_decode import ctc_greedy_decode
+from ..event_logger import EventLogger
 
 def _atomic_save(obj, path):
     tmp = path + ".tmp"
@@ -24,6 +25,14 @@ def _png_from_tensor(chw):
     arr = (1.0 - chw.squeeze(0).clamp(0,1)).mul(255).byte().cpu().numpy()  # back to black ink
     return Image.fromarray(arr, mode="L")
 
+def _png_to_base64(img: Image.Image) -> str:
+    """Convert PIL Image to base64 data URL for frontend display."""
+    import base64
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    b64_str = base64.b64encode(buf.getvalue()).decode('ascii')
+    return f"data:image/png;base64,{b64_str}"
+
 def train_crnn_ctc(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[str,Any]], None]):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     data_cfg = config.get("data", {})
@@ -31,11 +40,25 @@ def train_crnn_ctc(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[st
     val_dir = data_cfg["val_dir"]
     img_h = int(data_cfg.get("img_h", 64)); img_w_max = int(data_cfg.get("img_w_max", 512))
 
+    # NEW: Support max_samples to limit dataset size
+    max_train = data_cfg.get("max_train_samples")
+    max_val = data_cfg.get("max_val_samples")
+
     os.makedirs(run_dir, exist_ok=True)
     os.makedirs(os.path.join(run_dir, "samples"), exist_ok=True)
 
-    train_ds = HWRDataset(train_dir, img_h=img_h, img_w_max=img_w_max)
-    val_ds   = HWRDataset(val_dir,   img_h=img_h, img_w_max=img_w_max)
+    # Initialize EventLogger for persistence
+    events_file = os.path.join(run_dir, "events.jsonl")
+    logger = EventLogger(events_file)
+    logger.log_status("RUNNING", "Training started")
+
+    # Check for stop signal file
+    stop_file = os.path.join(run_dir, "STOP_REQUESTED")
+    def should_stop():
+        return os.path.exists(stop_file)
+
+    train_ds = HWRDataset(train_dir, img_h=img_h, img_w_max=img_w_max, max_samples=max_train)
+    val_ds   = HWRDataset(val_dir,   img_h=img_h, img_w_max=img_w_max, max_samples=max_val)
 
     bs = int(config["train"]["batch_size"])
     train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True, num_workers=0, collate_fn=collate_ctc)
@@ -116,10 +139,19 @@ def train_crnn_ctc(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[st
         logits, T_ex = model(val_x)
     model.train()
 
-    emit({"event":"dataset_stats", "train_tokens": train_len, "val_tokens": val_len, "typical_T": int(T_ex)})
+    stats_event = {
+        "event": "dataset_stats",
+        "train_samples": len(train_ds),
+        "val_samples": len(val_ds),
+        "train_tokens": train_len,
+        "val_tokens": val_len,
+        "typical_T": int(T_ex)
+    }
+    emit(stats_event)
+    logger.log_dataset_stats(len(train_ds), len(val_ds), train_len)
 
     # quick validation (restore training flag after)
-    def quick_val(save_png_step: Optional[int]=None):
+    def quick_val(save_png_step: Optional[int]=None, return_samples: bool=False):
         was_training = model.training
         model.eval()
         val_x, _, _, val_tokens = next(iter(val_loader))
@@ -127,6 +159,30 @@ def train_crnn_ctc(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[st
         with torch.no_grad():
             val_logits, Tval = model(val_x)
             hyps_idx = ctc_greedy_decode(val_logits, blank_id)
+
+        # Process multiple samples if requested
+        samples_list = []
+        if return_samples:
+            num_samples = min(10, val_x.size(0))  # Up to 10 samples
+            for b in range(num_samples):
+                tgt_tokens_b = val_tokens[b]
+                tgt_str_b = " ".join(tgt_tokens_b)
+                hyp_tokens_b = [TOKEN_LIST[i] for i in hyps_idx[b]]
+                hyp_str_b = " ".join(hyp_tokens_b)
+
+                # Convert image to base64 for frontend
+                img_b = _png_from_tensor(val_x[b].detach().cpu())
+                img_b64 = _png_to_base64(img_b)
+
+                samples_list.append({
+                    "id": f"batch_{b}",
+                    "target": tgt_str_b,
+                    "pred": hyp_str_b,
+                    "image_b64": img_b64,
+                    "ok": tgt_str_b == hyp_str_b
+                })
+
+        # First sample for metrics
         tgt_tokens = val_tokens[0]
         tgt_str = " ".join(tgt_tokens)
         hyp_tokens = [TOKEN_LIST[i] for i in hyps_idx[0]]
@@ -138,18 +194,39 @@ def train_crnn_ctc(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[st
             "valid": 1.0 if (len(hyp_tokens) > 0 and is_valid_token_stream(hyp_tokens)) else 0.0,
             "tree_f1": 0.0
         }
+
         png_path = ""
         if save_png_step is not None:
             img = _png_from_tensor(val_x[0].detach().cpu())
             png_path = os.path.join(run_dir, "samples", f"step_{save_png_step}.png")
+            os.makedirs(os.path.dirname(png_path), exist_ok=True)
             img.save(png_path)
+
         if was_training:
             model.train()
+
+        if return_samples:
+            return m, tgt_str, hyp_str, png_path, samples_list
         return m, tgt_str, hyp_str, png_path
 
     for epoch in range(start_epoch+1, epochs+1):
+        # Check for stop signal
+        if should_stop():
+            logger.log_status("STOPPED", f"Training stopped by user at epoch {epoch}")
+            logger.log_text(f"Early stopping requested. Saving checkpoint at epoch {epoch-1}")
+            emit({"event": "stopped", "epoch": epoch - 1, "message": "Training stopped by user"})
+            break
+
+        epoch_start_time = time.time()
         model.train()
+        epoch_loss_sum = 0.0
+        epoch_batches = 0
+
         for batch in train_loader:
+            # Check stop signal during epoch
+            if should_stop():
+                logger.log_text(f"Stop signal detected during epoch {epoch}, finishing current epoch...")
+                break
             if not model.training:
                 model.train()
             x, y, y_lens, tokens = batch
@@ -180,22 +257,29 @@ def train_crnn_ctc(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[st
                 scheduler.step()
 
             global_step += 1
+            epoch_loss_sum += float(loss.detach().cpu().item())
+            epoch_batches += 1
 
             if emit_every > 0 and (global_step % emit_every == 0):
-                m, tgt_str, hyp_str, png_path = quick_val(save_png_step=global_step)
+                result = quick_val(save_png_step=global_step, return_samples=True)
+                m, tgt_str, hyp_str, png_path, samples_list = result if len(result) == 5 else (*result, [])
+
+                # Emit metrics
                 emit({
                     "event": "train_step",
                     "epoch": epoch,
                     "step": global_step,
                     "lr": float(opt.param_groups[0]["lr"]),
-                    "metrics": {"loss": float(loss.detach().cpu().item()), **m},
-                    "samples": [{
-                        "png_path": png_path.replace("\\","/"),
-                        "target": tgt_str,
-                        "pred": hyp_str,
-                        "ok": m["exact"] > 0.5
-                    }]
+                    "metrics": {"loss": float(loss.detach().cpu().item()), **m}
                 })
+
+                # Emit sample predictions with images
+                if samples_list:
+                    emit({
+                        "event": "sample_pred",
+                        "epoch": epoch,
+                        "items": samples_list
+                    })
 
             if ckpt_every_steps > 0 and (global_step % ckpt_every_steps == 0):
                 _atomic_save({
@@ -235,18 +319,38 @@ def train_crnn_ctc(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[st
         }, os.path.join(run_dir, "checkpoint_latest.pt"))
         _atomic_save({"model": model.state_dict()}, os.path.join(run_dir, f"checkpoint_epoch_{epoch}.pt"))
 
+        epoch_duration = time.time() - epoch_start_time
+        avg_train_loss = epoch_loss_sum / max(1, epoch_batches)
+
+        epoch_metrics = {
+            "train_loss": avg_train_loss,
+            "val_loss": float(loss.detach().cpu().item()) if tot > 0 else 0,
+            "cer": cer_sum/max(1,tot),
+            "wer": wer_sum/max(1,tot),
+            "exact": exact_sum/max(1,tot),
+            "valid": valid_sum/max(1,tot),
+            "lr": float(opt.param_groups[0]["lr"]),
+            "epoch_time_sec": epoch_duration,
+            "samples_processed": tot,
+            "batches_processed": epoch_batches
+        }
+
         emit({
             "event": "epoch_end",
             "epoch": epoch,
-            "metrics": {
-                "loss": float(loss.detach().cpu().item()),
-                "cer": cer_sum/max(1,tot),
-                "wer": wer_sum/max(1,tot),
-                "exact": exact_sum/max(1,tot),
-                "valid": valid_sum/max(1,tot),
-                "tree_f1": 0.0
-            }
+            "metrics": epoch_metrics
         })
 
-    _atomic_save({"model": model.state_dict(), "vocab": TOKEN_LIST}, os.path.join(run_dir, "crnn_final.pt"))
-    emit({ "event": "finished", "epoch": epochs, "checkpoint": os.path.join(run_dir, "crnn_final.pt") })
+        # Persist to events.jsonl
+        logger.log_metric(epoch, epoch_metrics)
+        logger.log_text(f"Epoch {epoch}/{epochs} completed - CER: {(epoch_metrics['cer']*100):.2f}%")
+
+    final_ckpt = os.path.join(run_dir, "crnn_final.pt")
+    _atomic_save({"model": model.state_dict(), "vocab": TOKEN_LIST}, final_ckpt)
+
+    # Log final checkpoint
+    logger.log_checkpoint("final", final_ckpt, epochs, epoch_metrics if 'epoch_metrics' in locals() else {})
+    logger.log_status("FINISHED", f"Training completed after {epochs} epochs")
+    logger.close()
+
+    emit({ "event": "finished", "epoch": epochs, "checkpoint": final_ckpt })
