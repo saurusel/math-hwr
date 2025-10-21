@@ -67,14 +67,9 @@ except Exception:
     train_crnn_ctc = None
 
 try:
-    from ..core.train.trainer_attn import train_attn_seq2seq
+    from ..core.train.trainer_seg_mlp import train_seg_mlp
 except Exception:
-    train_attn_seq2seq = None
-
-try:
-    from ..core.train.trainer_vit import train_vit_seq2seq
-except Exception:
-    train_vit_seq2seq = None
+    train_seg_mlp = None
 
 @router.post("/jobs")
 def create_training_job(request: TrainingJobRequest):
@@ -154,10 +149,8 @@ def create_training_job(request: TrainingJobRequest):
 
     if request.model_type == "M1" and train_crnn_ctc is not None:
         trainer_fn = train_crnn_ctc
-    elif request.model_type == "M2" and train_attn_seq2seq is not None:
-        trainer_fn = train_attn_seq2seq
-    elif request.model_type == "M3" and train_vit_seq2seq is not None:
-        trainer_fn = train_vit_seq2seq
+    elif request.model_type == "M2" and train_seg_mlp is not None:
+        trainer_fn = train_seg_mlp
 
     if trainer_fn:
         def _runner():

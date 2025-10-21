@@ -42,21 +42,6 @@ export function AdvancedSettings({ modelType, config, onChange }: AdvancedSettin
     });
   };
 
-  const updateM3Advanced = (key: string, value: number) => {
-    onChange({
-      ...config,
-      hyper: {
-        ...config.hyper,
-        advanced: {
-          ...config.hyper.advanced,
-          m3: {
-            ...config.hyper.advanced?.m3,
-            [key]: value,
-          },
-        },
-      },
-    });
-  };
 
   return (
     <div className="bg-white rounded-xl shadow p-6">
@@ -94,99 +79,63 @@ export function AdvancedSettings({ modelType, config, onChange }: AdvancedSettin
 
           {modelType === 'M2' && (
             <div className="border-l-4 border-blue-500 pl-4 space-y-3">
-              <h3 className="font-medium text-slate-700">M2 (Attention Seq2Seq) Settings</h3>
+              <h3 className="font-medium text-slate-700">M2 (Segmentation + MLP) Settings</h3>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1">
-                    Model Dimension (d_model)
+                    Dropout Rate
                   </label>
                   <input
                     type="number"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                    value={config.hyper.advanced?.m2?.d_model || 256}
-                    onChange={(e) => updateM2Advanced('d_model', parseInt(e.target.value))}
-                  />
-                  <p className="text-xs text-slate-500 mt-1">Hidden dimension size</p>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">
-                    Number of Heads
-                  </label>
-                  <input
-                    type="number"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                    value={config.hyper.advanced?.m2?.n_heads || 4}
-                    onChange={(e) => updateM2Advanced('n_heads', parseInt(e.target.value))}
-                  />
-                  <p className="text-xs text-slate-500 mt-1">Attention heads (must divide d_model)</p>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">
-                    Encoder Layers
-                  </label>
-                  <input
-                    type="number"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                    value={config.hyper.advanced?.m2?.n_layers_enc || 4}
-                    onChange={(e) => updateM2Advanced('n_layers_enc', parseInt(e.target.value))}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">
-                    Decoder Layers
-                  </label>
-                  <input
-                    type="number"
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                    value={config.hyper.advanced?.m2?.n_layers_dec || 4}
-                    onChange={(e) => updateM2Advanced('n_layers_dec', parseInt(e.target.value))}
-                  />
-                </div>
-
-                <div className="col-span-2">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">
-                    Teacher Forcing Ratio
-                  </label>
-                  <input
-                    type="number"
-                    step="0.1"
+                    step="0.05"
                     min="0"
-                    max="1"
+                    max="0.9"
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                    value={config.hyper.advanced?.m2?.teacher_forcing || 0.5}
-                    onChange={(e) => updateM2Advanced('teacher_forcing', parseFloat(e.target.value))}
+                    value={config.hyper.advanced?.m2?.dropout || 0.3}
+                    onChange={(e) => updateM2Advanced('dropout', parseFloat(e.target.value))}
                   />
-                  <p className="text-xs text-slate-500 mt-1">
-                    Probability of using ground truth during training (0-1)
-                  </p>
+                  <p className="text-xs text-slate-500 mt-1">MLP dropout for regularization</p>
                 </div>
-              </div>
-            </div>
-          )}
 
-          {modelType === 'M3' && (
-            <div className="border-l-4 border-purple-500 pl-4 space-y-3">
-              <h3 className="font-medium text-slate-700">M3 (Symbol Classifier) Settings</h3>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  Dropout Rate
-                </label>
-                <input
-                  type="number"
-                  step="0.05"
-                  min="0"
-                  max="0.9"
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg"
-                  value={config.hyper.advanced?.m3?.dropout || 0.2}
-                  onChange={(e) => updateM3Advanced('dropout', parseFloat(e.target.value))}
-                />
-                <p className="text-xs text-slate-500 mt-1">
-                  Dropout probability for regularization (0-0.9)
-                </p>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Min Segment Area
+                  </label>
+                  <input
+                    type="number"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+                    value={config.hyper.advanced?.m2?.min_seg_area || 20}
+                    onChange={(e) => updateM2Advanced('min_seg_area', parseInt(e.target.value))}
+                  />
+                  <p className="text-xs text-slate-500 mt-1">Min character area (pixels)</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Max Segment Area
+                  </label>
+                  <input
+                    type="number"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+                    value={config.hyper.advanced?.m2?.max_seg_area || 4000}
+                    onChange={(e) => updateM2Advanced('max_seg_area', parseInt(e.target.value))}
+                  />
+                  <p className="text-xs text-slate-500 mt-1">Max character area (pixels)</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Target Character Size
+                  </label>
+                  <input
+                    type="number"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+                    value={config.hyper.advanced?.m2?.target_char_size || 32}
+                    onChange={(e) => updateM2Advanced('target_char_size', parseInt(e.target.value))}
+                  />
+                  <p className="text-xs text-slate-500 mt-1">Character normalization size (32x32)</p>
+                </div>
               </div>
             </div>
           )}

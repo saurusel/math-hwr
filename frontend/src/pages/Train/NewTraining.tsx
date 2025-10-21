@@ -75,9 +75,8 @@ export function NewTraining() {
                 setFormData({ ...formData, model_type: e.target.value as ModelType })
               }
             >
-              <option value="M1">M1 (CRNN-CTC)</option>
-              <option value="M2">M2 (Attention)</option>
-              <option value="M3">M3 (Symbol Classifier)</option>
+              <option value="M1">M1 (CRNN-CTC) - Fast sequence model</option>
+              <option value="M2">M2 (Segmentation + MLP) - Classical OCR with character segmentation</option>
             </select>
           </div>
 

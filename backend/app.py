@@ -8,10 +8,9 @@ from .api.routes_eval import router as eval_router
 from .api.routes_models import router as models_router
 from .api.routes_leaderboard import router as leaderboard_router
 from .api.routes_predict_ckpt import router as predict2_router
-from backend.api import routes_predict_attn
-from backend.api import routes_predict_vit
+from .api.routes_predict_seg import router as predict_seg_router
 
-app = FastAPI(title="Math-HWR Backend", version="0.1.0")
+app = FastAPI(title="Math-HWR Backend - M1/M2", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,8 +30,8 @@ app.include_router(eval_router)
 app.include_router(models_router)
 app.include_router(leaderboard_router)
 app.include_router(predict2_router)
-app.include_router(routes_predict_attn.router)
-app.include_router(routes_predict_vit.router)
+app.include_router(predict_seg_router)  # M2: Segmentation + MLP
+# Old M3 (ViT) removed
 
 @app.get("/")
 def root():

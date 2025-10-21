@@ -4,10 +4,9 @@ Deep learning system for recognizing handwritten math expressions with complete 
 
 ## 🎯 Features
 
-**Three Neural Network Models:**
-- **M1 (CRNN-CTC)** - Fast, works with 1K samples, CER ~2-5%
-- **M2 (Attention Seq2Seq)** - Better quality, needs 2K samples, CER ~1.5-4%
-- **M3 (Vision Transformer)** - Best quality, needs 5K samples, CER ~0.5-2%
+**Two Neural Network Models:**
+- **M1 (CRNN-CTC)** - Fast sequence model, works with 1K samples, CER ~2-5%
+- **M2 (Segmentation + MLP)** - Classical OCR with character segmentation and perceptron classifier
 
 **Complete Training System:**
 - Web UI for creating/monitoring training jobs
@@ -21,7 +20,7 @@ Deep learning system for recognizing handwritten math expressions with complete 
 - Canvas drawing interface
 - Trained model selector
 - Real-time recognition
-- Support for all three models
+- Support for both models (M1 sequence, M2 segmentation)
 
 ## 🚀 Quick Start
 

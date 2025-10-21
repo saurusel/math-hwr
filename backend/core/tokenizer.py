@@ -1,23 +1,31 @@
-# Tokenizer & normalization (Grammar v2: no 'frac', exponent has single-token inside parentheses)
-# Vocab:
-#  digits: 0-9
-#  vars:   x y z
-#  ops:    + - * ÷ =
-#  paren:  ( )
-#  pow:    ^
+# Tokenizer & normalization with GROUPED TOKENS
+# Groups visual structures like "0^8" into single tokens instead of "0", "^", "(", "8", ")"
 #
-#  Additional normalization accepted in inputs/labels and mapped to canonical tokens:
-#    '·', '⋅', '•', '×', 'В·' -> '*'
-#    '/', '÷', 'Г·'          -> '÷'
-#    whitespace variations are ignored (split by spaces)
+# Vocabulary now includes:
+#  - Base digits: 0-9
+#  - Base vars: x, y, z
+#  - Grouped powers: 0^0, 0^1, ..., z^z (all combinations)
+#  - Operators: + - * ÷ =
+#  - Parentheses: ( )
 #
-TOKEN_LIST = [
-    "0","1","2","3","4","5","6","7","8","9",
-    "x","y","z",
-    "+","-","*","÷","=",
-    "(",")",
-    "^"
-]
+# Total: 198 unique tokens
+#
+# Load grouped vocabulary from file
+import os
+_vocab_path = os.path.join(os.path.dirname(__file__), "..", "..", "grouped_vocab.txt")
+if os.path.exists(_vocab_path):
+    with open(_vocab_path, "r", encoding="utf-8") as f:
+        TOKEN_LIST = [line.strip() for line in f if line.strip()]
+else:
+    # Fallback to basic vocab if file not found
+    TOKEN_LIST = [
+        "0","1","2","3","4","5","6","7","8","9",
+        "x","y","z",
+        "+","-","*","÷","=",
+        "(",")",
+        "^"
+    ]
+
 TOK2ID = {t:i for i,t in enumerate(TOKEN_LIST)}
 ID2TOK = {i:t for t,i in TOK2ID.items()}
 

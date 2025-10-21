@@ -1,6 +1,6 @@
 // Training types based on Train-and-Models-Spec
 
-export type ModelType = 'M1' | 'M2' | 'M3';
+export type ModelType = 'M1' | 'M2';
 export type JobStatus = 'QUEUED' | 'RUNNING' | 'STOPPING' | 'FINISHED' | 'FAILED' | 'STOPPED';
 
 export interface TrainingConfig {
@@ -23,13 +23,11 @@ export interface TrainingConfig {
     advanced?: {
       m1?: { weight_decay?: number };
       m2?: {
-        d_model?: number;
-        n_heads?: number;
-        n_layers_enc?: number;
-        n_layers_dec?: number;
-        teacher_forcing?: number;
+        dropout?: number;
+        min_seg_area?: number;
+        max_seg_area?: number;
+        target_char_size?: number;
       };
-      m3?: { dropout?: number };
     };
   };
   augment: {
