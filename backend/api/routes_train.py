@@ -1,78 +1,268 @@
-import os, json, threading, time, random, asyncio
+import os, json, threading, time, random, traceback, queue
 from datetime import datetime
+from typing import Optional, Dict, Any
+from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
+try:
+    from ..core.event_logger import EventLogger
+except ImportError:
+    EventLogger = None
 RUNS = {}
 router = APIRouter()
 
+# Pydantic models for /jobs endpoint (as per Train-and-Models-Spec)
+class DatasetConfig(BaseModel):
+    name: str
+    train_manifest: str
+    val_manifest: str
+
+class HyperConfig(BaseModel):
+    batch_size: int
+    epochs: int
+    img_h: int
+    img_w_max: int
+    lr: float
+    optimizer: str
+    scheduler: str
+    seed: int
+    max_samples: Optional[int] = None  # NEW: Limit dataset size
+    advanced: Optional[Dict[str, Any]] = None
+
+class AugmentConfig(BaseModel):
+    invert: bool
+    random_pad: bool
+
+class TrainingJobRequest(BaseModel):
+    model_type: str  # M1, M2, M3
+    run_name: str
+    dataset: DatasetConfig
+    hyper: HyperConfig
+    augment: AugmentConfig
+
 def _emit(run_id, payload):
     run = RUNS.get(run_id)
-    if not run: return
+    if not run:
+        return
+    # Update progress counters if present
+    try:
+        if payload.get("event") == "train_step":
+            run["step"] = int(payload.get("step", run.get("step", 0)))
+            run["epoch"] = int(payload.get("epoch", run.get("epoch", 0)))
+        elif payload.get("event") == "epoch_end":
+            run["epoch"] = int(payload.get("epoch", run.get("epoch", 0)))
+    except Exception:
+        pass
+
     for q in list(run["queues"]):
         try:
             q.put_nowait(payload)
         except Exception:
             pass
 
-def _training_simulator(run_id: str):
-    run = RUNS[run_id]
-    cfg = run["config"]
-    total_epochs = cfg.get("train", {}).get("epochs", 5)
-    steps_per_epoch = 50
-    cer = 0.35
-    wer = 0.45
-    exact = 0.1
-    tree_f1 = 0.3
+try:
+    from ..core.train.trainer_crnn import train_crnn_ctc
+except Exception:
+    train_crnn_ctc = None
 
-    for ep in range(1, total_epochs+1):
-        run["epoch"] = ep
-        for st in range(1, steps_per_epoch+1):
-            if run["status"] == "stopped":
-                _emit(run_id, {"run_id": run_id, "event":"finished", "epoch": ep, "step": st})
-                return
-            while run["status"] == "paused":
-                time.sleep(0.3)
+try:
+    from ..core.train.trainer_seg_mlp import train_seg_mlp
+except Exception:
+    train_seg_mlp = None
 
-            run["step"] = st
-            # fake metric drift
-            cer = max(0.05, cer - random.uniform(0.001, 0.01))
-            wer = max(0.08, wer - random.uniform(0.001, 0.01))
-            exact = min(0.95, exact + random.uniform(0.002, 0.015))
-            tree_f1 = min(0.95, tree_f1 + random.uniform(0.002, 0.01))
+@router.post("/jobs")
+def create_training_job(request: TrainingJobRequest):
+    """
+    Create a new training job according to Train-and-Models-Spec.
+    Maps the standardized request format to internal training config.
+    """
+    import uuid
 
-            msg = {
-                "run_id": run_id,
-                "event": "train_step",
-                "epoch": ep,
-                "step": st,
-                "lr": 0.001,
-                "metrics": {
-                    "loss": round(1.5*cer + 0.2*wer, 4),
-                    "cer": round(cer, 4),
-                    "wer": round(wer, 4),
-                    "exact": round(exact, 4),
-                    "tree_f1": round(tree_f1, 4),
-                    "valid": round(min(1.0, 0.6 + tree_f1*0.4), 4)
-                },
-                "gpu": {"mem_gb": 4.2 + random.random(), "util": int(50 + 40*random.random()), "temp_c": 60 + int(10*random.random())},
-                "samples": [
-                    {
-                      "png_path": f"runs/{run_id}/samples/e{ep}_s{st}.png",
-                      "target": "frac ( { x + 1 } , { y - 2 } )",
-                      "pred":   "frac ( { x + 1 } , { y - 2 } )",
-                      "ok": True
+    job_id = f"{request.run_name}_{uuid.uuid4().hex[:8]}"
+    runs_dir = os.path.join("runs", job_id)
+    os.makedirs(runs_dir, exist_ok=True)
+
+    # Map frontend format to internal config format
+    # Extract directory from manifest path (e.g., "data/synth/train/labels.jsonl" -> "data/synth/train")
+    train_dir = os.path.dirname(request.dataset.train_manifest)
+    val_dir = os.path.dirname(request.dataset.val_manifest)
+
+    # Calculate train/val split if max_samples is set
+    max_train_samples = None
+    max_val_samples = None
+    if request.hyper.max_samples:
+        # Split: 80% train, 20% val (10% would be test, but we don't use test in training)
+        max_train_samples = int(request.hyper.max_samples * 0.8)
+        max_val_samples = int(request.hyper.max_samples * 0.2)
+
+    internal_config = {
+        "model": "crnn_ctc" if request.model_type == "M1" else request.model_type.lower(),
+        "train": {
+            "epochs": request.hyper.epochs,
+            "batch_size": request.hyper.batch_size,
+            "lr": request.hyper.lr,
+            "optimizer": request.hyper.optimizer,
+            "scheduler": request.hyper.scheduler,
+            "seed": request.hyper.seed,
+        },
+        "data": {
+            "train_dir": train_dir,
+            "val_dir": val_dir,
+            "img_h": request.hyper.img_h,
+            "img_w_max": request.hyper.img_w_max,
+            "max_train_samples": max_train_samples,
+            "max_val_samples": max_val_samples,
+        },
+        "augment": {
+            "invert": request.augment.invert,
+            "random_pad": request.augment.random_pad,
+        }
+    }
+
+    # Add advanced settings if provided
+    if request.hyper.advanced:
+        model_key = request.model_type.lower()
+        if model_key in request.hyper.advanced:
+            internal_config["train"].update(request.hyper.advanced[model_key])
+
+    # Save config
+    with open(os.path.join(runs_dir, "config.json"), "w", encoding="utf-8") as f:
+        json.dump(request.dict(), f, indent=2, ensure_ascii=False)
+
+    RUNS[job_id] = {
+        "job_id": job_id,
+        "run_name": request.run_name,
+        "model_type": request.model_type,
+        "config": internal_config,
+        "status": "QUEUED",
+        "queues": set(),
+        "epoch": 0,
+        "step": 0,
+        "dir": runs_dir,
+        "last_error": None,
+        "started_at": datetime.now().isoformat()
+    }
+
+    # Start training in background thread - select trainer by model type
+    trainer_fn = None
+
+    if request.model_type == "M1" and train_crnn_ctc is not None:
+        trainer_fn = train_crnn_ctc
+    elif request.model_type == "M2" and train_seg_mlp is not None:
+        trainer_fn = train_seg_mlp
+
+    if trainer_fn:
+        def _runner():
+            try:
+                RUNS[job_id]["status"] = "RUNNING"
+                trainer_fn(internal_config, runs_dir, lambda msg: _emit(job_id, msg))
+                RUNS[job_id]["status"] = "FINISHED"
+                RUNS[job_id]["finished_at"] = datetime.now().isoformat()
+                _emit(job_id, {"run_id": job_id, "event": "finished"})
+            except Exception as e:
+                RUNS[job_id]["status"] = "FAILED"
+                RUNS[job_id]["last_error"] = traceback.format_exc()
+                _emit(job_id, {"run_id": job_id, "event": "error", "message": str(e)})
+                if EventLogger:
+                    try:
+                        logger_err = EventLogger(os.path.join(runs_dir, "events.jsonl"))
+                        logger_err.log_status("FAILED", str(e))
+                        logger_err.close()
+                    except:
+                        pass
+
+        t = threading.Thread(target=_runner, daemon=True)
+        t.start()
+    else:
+        # Simulator for when real trainer not available
+        def _sim():
+            import random
+            RUNS[job_id]["status"] = "RUNNING"
+            _emit(job_id, {"event": "log", "ts": datetime.now().isoformat(), "line": f"Starting {request.model_type} simulation mode..."})
+
+            # Write events to file for persistence
+            logger_sim = EventLogger(os.path.join(runs_dir, "events.jsonl"))
+            logger_sim.log_status("RUNNING", f"{request.model_type} simulation started")
+
+            total_epochs = request.hyper.epochs
+
+            for ep in range(1, total_epochs + 1):
+                RUNS[job_id]["epoch"] = ep
+
+                # Check stop signal
+                stop_file = os.path.join(runs_dir, "STOP_REQUESTED")
+                if os.path.exists(stop_file):
+                    RUNS[job_id]["status"] = "STOPPED"
+                    logger_sim.log_status("STOPPED", f"Stopped at epoch {ep}")
+                    _emit(job_id, {"event": "stopped", "epoch": ep - 1})
+                    break
+
+                # Simulate improving metrics (model-specific patterns)
+                if request.model_type == "M1":
+                    base_cer = 0.3 * (1.0 - ep / total_epochs)
+                    base_wer = 0.4 * (1.0 - ep / total_epochs)
+                    base_exact = 0.5 + 0.4 * (ep / total_epochs)
+                elif request.model_type == "M2":
+                    base_cer = 0.25 * (1.0 - ep / total_epochs)  # Better than M1
+                    base_wer = 0.35 * (1.0 - ep / total_epochs)
+                    base_exact = 0.6 + 0.35 * (ep / total_epochs)
+                else:  # M3
+                    base_cer = 0.20 * (1.0 - ep / total_epochs)  # Best
+                    base_wer = 0.28 * (1.0 - ep / total_epochs)
+                    base_exact = 0.65 + 0.32 * (ep / total_epochs)
+
+                for st in range(1, 4):
+                    step_metrics = {
+                        "loss": 2.5 * (1.0 - (ep * 4 + st) / (total_epochs * 4)),
+                        "cer": max(0.01, base_cer + random.uniform(-0.03, 0.03)),
+                        "lr": request.hyper.lr * (1.0 - ep / total_epochs) if request.hyper.scheduler == "cosine" else request.hyper.lr
                     }
-                ]
-            }
-            _emit(run_id, msg)
-            time.sleep(0.15)  # simulate work
+                    _emit(job_id, {"event": "train_step", "epoch": ep, "step": (ep - 1) * 4 + st, "metrics": step_metrics})
+                    time.sleep(0.2)
 
-        # epoch end
-        _emit(run_id, {"run_id": run_id, "event": "epoch_end", "epoch": ep, "metrics": {"cer": round(cer,4), "wer": round(wer,4), "exact": round(exact,4), "tree_f1": round(tree_f1,4)}})
+                # Epoch end metrics
+                epoch_metrics = {
+                    "train_loss": 2.5 * (1.0 - ep / total_epochs),
+                    "val_loss": 2.3 * (1.0 - ep / total_epochs),
+                    "cer": max(0.01, base_cer),
+                    "wer": max(0.01, base_wer),
+                    "exact": min(0.97, base_exact),
+                    "valid": min(0.99, 0.88 + 0.11 * (ep / total_epochs)),
+                    "lr": request.hyper.lr * (1.0 - ep / total_epochs) if request.hyper.scheduler == "cosine" else request.hyper.lr,
+                    "epoch_time_sec": 18.0 + random.uniform(-3, 3),
+                    "samples_processed": request.hyper.max_samples or 1000,
+                    "batches_processed": (request.hyper.max_samples or 1000) // request.hyper.batch_size
+                }
 
-    RUNS[run_id]["status"] = "finished"
-    _emit(run_id, {"run_id": run_id, "event":"finished", "epoch": total_epochs})
+                # Add model-specific metrics
+                if request.model_type == "M2":
+                    epoch_metrics["attention_entropy"] = 0.4 + random.uniform(-0.1, 0.1)
+                    epoch_metrics["teacher_forcing_used"] = 0.5
+                elif request.model_type == "M3":
+                    epoch_metrics["decoder_perplexity"] = 3.0 * (1.0 - ep / total_epochs)
+                    epoch_metrics["patch_attention_mean"] = 0.15
+
+                _emit(job_id, {"event": "epoch_end", "epoch": ep, "metrics": epoch_metrics})
+                logger_sim.log_metric(ep, epoch_metrics)
+                logger_sim.log_text(f"Epoch {ep}/{total_epochs} completed")
+                _emit(job_id, {"event": "log", "ts": datetime.now().isoformat(), "line": f"Epoch {ep}/{total_epochs} completed"})
+
+            if RUNS[job_id]["status"] != "STOPPED":
+                RUNS[job_id]["status"] = "FINISHED"
+                RUNS[job_id]["finished_at"] = datetime.now().isoformat()
+                logger_sim.log_status("FINISHED", "Simulation completed")
+                _emit(job_id, {"event": "finished", "message": "Simulation completed"})
+
+            logger_sim.close()
+
+        t = threading.Thread(target=_sim, daemon=True)
+        t.start()
+
+    return JSONResponse(
+        {"job_id": job_id, "status": RUNS[job_id]["status"]},
+        headers={"Content-Type": "application/json; charset=utf-8"}
+    )
 
 @router.post("/start")
 def start_training(config: dict):
@@ -88,26 +278,428 @@ def start_training(config: dict):
         "queues": set(),
         "epoch": 0,
         "step": 0,
-        "dir": runs_dir
+        "dir": runs_dir,
+        "last_error": None
     }
-    t = threading.Thread(target=_training_simulator, args=(run_id,), daemon=True)
+
+    if model == "crnn_ctc" and train_crnn_ctc is not None:
+        def _runner():
+            try:
+                train_crnn_ctc(config, runs_dir, lambda msg: _emit(run_id, msg))
+            except Exception as e:
+                RUNS[run_id]["status"] = "error"
+                RUNS[run_id]["last_error"] = traceback.format_exc()
+                _emit(run_id, {"run_id": run_id, "event": "error", "message": str(e)})
+                return
+            RUNS[run_id]["status"] = "finished"
+            _emit(run_id, {"run_id": run_id, "event": "finished"})
+        t = threading.Thread(target=_runner, daemon=True)
+    else:
+        # fallback to simulator if needed
+        def _sim():
+            cfg = RUNS[run_id]["config"]
+            total_epochs = cfg.get("train", {}).get("epochs", 1)
+            for ep in range(1, total_epochs+1):
+                for st in range(1, 51):
+                    _emit(run_id, {"event":"train_step","epoch":ep,"step":st,"metrics":{"cer":0.3}})
+                    time.sleep(0.05)
+                _emit(run_id, {"event":"epoch_end","epoch":ep,"metrics":{"cer":0.2}})
+            RUNS[run_id]["status"]="finished"
+            _emit(run_id, {"event":"finished"})
+        t = threading.Thread(target=_sim, daemon=True)
+
     t.start()
-    return JSONResponse({"run_id": run_id, "status": "running"})
+    return JSONResponse({"run_id": run_id, "status": RUNS[run_id]["status"]})
 
-@router.post("/pause")
-def pause(run_id: str):
-    if run_id not in RUNS: raise HTTPException(404, "run not found")
-    RUNS[run_id]["status"] = "paused"
-    return {"ok": True}
+@router.get("/jobs/{job_id}")
+def get_job_status(job_id: str):
+    """Get training job status and progress."""
+    # Check active runs first
+    if job_id in RUNS:
+        run = RUNS[job_id]
+        return JSONResponse(
+            {
+                "job_id": job_id,
+                "run_name": run.get("run_name", job_id),
+                "model_type": run.get("model_type", "M1"),
+                "status": run["status"],
+                "started_at": run.get("started_at", datetime.now().isoformat()),
+                "current_epoch": run.get("epoch", 0),
+                "progress": run.get("epoch", 0),
+                "best_metric": run.get("best_metric"),
+                "last_checkpoint": run.get("last_checkpoint"),
+            },
+            headers={"Content-Type": "application/json; charset=utf-8"}
+        )
 
-@router.post("/resume")
-def resume(run_id: str):
-    if run_id not in RUNS: raise HTTPException(404, "run not found")
-    RUNS[run_id]["status"] = "running"
-    return {"ok": True}
+    # Check filesystem for finished runs
+    run_dir = os.path.join("runs", job_id)
+    config_file = os.path.join(run_dir, "config.json")
+    events_file = os.path.join(run_dir, "events.jsonl")
 
-@router.post("/stop")
-def stop(run_id: str):
-    if run_id not in RUNS: raise HTTPException(404, "run not found")
-    RUNS[run_id]["status"] = "stopped"
-    return {"ok": True}
+    if not os.path.exists(run_dir) or not os.path.exists(config_file):
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    # Load config
+    with open(config_file, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+
+    # Determine status from events.jsonl
+    status = "FINISHED"
+    current_epoch = 0
+    if os.path.exists(events_file):
+        with open(events_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                try:
+                    event = json.loads(line)
+                    if event.get("type") == "status":
+                        status = event.get("status", "FINISHED")
+                    if event.get("event") == "epoch_end":
+                        current_epoch = event.get("epoch", 0)
+                except:
+                    continue
+
+    return JSONResponse(
+        {
+            "job_id": job_id,
+            "run_name": config.get("run_name", job_id),
+            "model_type": config.get("model_type", "M1"),
+            "status": status,
+            "started_at": config.get("started_at", datetime.now().isoformat()),
+            "current_epoch": current_epoch,
+            "progress": current_epoch,
+            "best_metric": None,
+            "last_checkpoint": None,
+        },
+        headers={"Content-Type": "application/json; charset=utf-8"}
+    )
+
+@router.post("/jobs/{job_id}/stop")
+def stop_job(job_id: str):
+    """
+    Stop a running training job gracefully.
+    Creates STOP_REQUESTED file that trainer checks between epochs.
+    """
+    if job_id not in RUNS:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    run = RUNS[job_id]
+    if run["status"] in ["FINISHED", "FAILED", "STOPPED"]:
+        return JSONResponse(
+            {"message": f"Job already {run['status']}"},
+            headers={"Content-Type": "application/json; charset=utf-8"}
+        )
+
+    # Create stop signal file for trainer to detect
+    run_dir = run.get("dir", os.path.join("runs", job_id))
+    stop_file = os.path.join(run_dir, "STOP_REQUESTED")
+
+    try:
+        with open(stop_file, 'w') as f:
+            f.write(f"Stop requested at {datetime.now().isoformat()}\n")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create stop signal: {str(e)}")
+
+    # Update status (will be confirmed by trainer)
+    run["status"] = "STOPPING"
+    _emit(job_id, {"event": "log", "ts": datetime.now().isoformat(), "line": "Stop signal sent. Will stop after current epoch..."})
+
+    return JSONResponse(
+        {"job_id": job_id, "status": "STOPPING", "message": "Stop signal sent"},
+        headers={"Content-Type": "application/json; charset=utf-8"}
+    )
+
+@router.get("/stream/{job_id}")
+async def stream_training_events(job_id: str):
+    """
+    SSE endpoint for live training events streaming.
+    Streams metrics, logs, samples, checkpoints, and status updates.
+    """
+    if job_id not in RUNS:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    run = RUNS[job_id]
+
+    # Create a queue for this client
+    client_queue = queue.Queue(maxsize=100)
+    run["queues"].add(client_queue)
+
+    async def event_generator():
+        try:
+            # Send initial status
+            yield f"event: status\ndata: {json.dumps({'status': run['status']}, ensure_ascii=False)}\n\n"
+
+            while True:
+                try:
+                    # Wait for events with timeout
+                    event = client_queue.get(timeout=30)
+
+                    # Map internal events to SSE format
+                    event_type = event.get("event", "log")
+
+                    if event_type == "train_step":
+                        # Convert to metric event
+                        metric_data = {
+                            "epoch": event.get("epoch", 0),
+                            "train_loss": event.get("metrics", {}).get("loss", 0),
+                            "val_loss": 0,  # Will be updated on epoch_end
+                            "cer": event.get("metrics", {}).get("cer", 0),
+                            "lr": event.get("metrics", {}).get("lr", 0.001)
+                        }
+                        yield f"event: metric\ndata: {json.dumps(metric_data, ensure_ascii=False)}\n\n"
+
+                    elif event_type == "epoch_end":
+                        # Update run epoch tracking
+                        current_epoch = event.get("epoch", 0)
+                        run["epoch"] = current_epoch
+
+                        # For M2: metrics are directly in event, not nested in "metrics"
+                        metric_data = {
+                            "epoch": current_epoch,
+                            "train_loss": event.get("train_loss", 0),
+                            "val_loss": event.get("val_loss", 0) if "val_loss" in event else 0,
+                            "cer": event.get("cer", 0) if "cer" in event else 0,
+                            "wer": event.get("wer", 0) if "wer" in event else 0,
+                            "exact": event.get("exact", 0) if "exact" in event else 0,
+                            "lr": event.get("lr", 0.001),
+                            # M2 specific metrics
+                            "train_char_acc": event.get("train_char_acc", 0),
+                            "val_char_acc": event.get("val_char_acc", 0),
+                            "val_seq_acc": event.get("val_seq_acc", 0),
+                            "val_seg_acc": event.get("val_seg_acc", 0)
+                        }
+                        yield f"event: metric\ndata: {json.dumps(metric_data, ensure_ascii=False)}\n\n"
+
+                    elif event_type == "dataset_stats":
+                        # Send dataset stats as log for display
+                        stats_msg = f"Dataset loaded: {event.get('train_samples', 0)} train, {event.get('val_samples', 0)} val chars"
+                        log_data = {
+                            "ts": datetime.now().isoformat(),
+                            "line": stats_msg
+                        }
+                        yield f"event: log\ndata: {json.dumps(log_data, ensure_ascii=False)}\n\n"
+
+                    elif event_type == "sample_pred":
+                        # Forward sample predictions with images
+                        sample_data = {
+                            "epoch": event.get("epoch", 0),
+                            "items": event.get("items", [])
+                        }
+                        yield f"event: sample_pred\ndata: {json.dumps(sample_data, ensure_ascii=False)}\n\n"
+
+                    elif event_type == "status":
+                        # Status update (RUNNING, STOPPING, FINISHED, etc)
+                        new_status = event.get("status", "UNKNOWN")
+                        run["status"] = new_status
+                        status_data = {"status": new_status}
+                        yield f"event: status\ndata: {json.dumps(status_data, ensure_ascii=False)}\n\n"
+
+                        # Also log it
+                        log_data = {
+                            "ts": datetime.now().isoformat(),
+                            "line": event.get("message", f"Status: {new_status}")
+                        }
+                        yield f"event: log\ndata: {json.dumps(log_data, ensure_ascii=False)}\n\n"
+
+                    elif event_type in ["finished", "error", "stopped"]:
+                        status_map = {"finished": "FINISHED", "error": "FAILED", "stopped": "STOPPED"}
+                        new_status = status_map.get(event_type, "UNKNOWN")
+                        run["status"] = new_status
+                        status_data = {"status": new_status}
+                        yield f"event: status\ndata: {json.dumps(status_data, ensure_ascii=False)}\n\n"
+
+                        # Also send as log
+                        log_data = {
+                            "ts": datetime.now().isoformat(),
+                            "line": f"Training {event_type}: {event.get('message', '')}"
+                        }
+                        yield f"event: log\ndata: {json.dumps(log_data, ensure_ascii=False)}\n\n"
+
+                        if event_type in ["finished", "error", "stopped"]:
+                            break
+
+                    else:
+                        # Generic log event
+                        log_data = {
+                            "ts": datetime.now().isoformat(),
+                            "line": str(event.get("message", event))
+                        }
+                        yield f"event: log\ndata: {json.dumps(log_data, ensure_ascii=False)}\n\n"
+
+                except queue.Empty:
+                    # Send keep-alive ping
+                    yield f": ping\n\n"
+
+                    # Check if job finished
+                    if run["status"] in ["FINISHED", "FAILED", "STOPPED"]:
+                        break
+
+        except Exception as e:
+            print(f"SSE stream error for {job_id}: {e}")
+        finally:
+            # Clean up: remove queue from run
+            if client_queue in run["queues"]:
+                run["queues"].discard(client_queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+@router.get("/experiments")
+def list_experiments(
+    model: Optional[str] = None,
+    status: Optional[str] = None,
+    q: Optional[str] = None
+):
+    """
+    List all training experiments from both memory and filesystem.
+    Returns list of experiments with metadata.
+    """
+    experiments = []
+
+    # First, add from in-memory RUNS
+    for job_id, run in RUNS.items():
+        exp = {
+            "run_id": job_id,
+            "run_name": run.get("run_name", job_id),
+            "model_type": run.get("model_type", "M1"),
+            "status": run["status"],
+            "started_at": run.get("started_at", datetime.now().isoformat()),
+            "finished_at": run.get("finished_at"),
+            "best_metrics": run.get("best_metric"),
+            "config": run.get("config")
+        }
+        experiments.append(exp)
+
+    # Also scan filesystem for completed runs not in memory
+    runs_root = "runs"
+    if os.path.exists(runs_root):
+        for run_name in os.listdir(runs_root):
+            # Skip if already in RUNS
+            if run_name in RUNS:
+                continue
+
+            run_path = os.path.join(runs_root, run_name)
+            if not os.path.isdir(run_path):
+                continue
+
+            # Try to read config.json
+            config_path = os.path.join(run_path, "config.json")
+            run_config = None
+            run_name_clean = run_name
+            model_type_guess = "M1"
+
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        run_config = json.load(f)
+                        run_name_clean = run_config.get("run_name", run_name)
+                        model_type_guess = run_config.get("model_type", "M1")
+                except Exception:
+                    pass
+
+            # Determine status from checkpoints
+            has_final = os.path.exists(os.path.join(run_path, "crnn_final.pt"))
+            has_latest = os.path.exists(os.path.join(run_path, "checkpoint_latest.pt"))
+            status_guess = "FINISHED" if has_final or has_latest else "UNKNOWN"
+
+            # Get modification time for sorting
+            try:
+                mtime = os.path.getmtime(run_path)
+                started_at = datetime.fromtimestamp(mtime).isoformat()
+            except Exception:
+                started_at = datetime.now().isoformat()
+
+            exp = {
+                "run_id": run_name,
+                "run_name": run_name_clean,
+                "model_type": model_type_guess,
+                "status": status_guess,
+                "started_at": started_at,
+                "finished_at": started_at if status_guess == "FINISHED" else None,
+                "best_metrics": None,
+                "config": run_config
+            }
+            experiments.append(exp)
+
+    # Apply filters
+    filtered = []
+    for exp in experiments:
+        if model and exp["model_type"] != model:
+            continue
+        if status and exp["status"] != status:
+            continue
+        if q and q.lower() not in exp["run_name"].lower():
+            continue
+        filtered.append(exp)
+
+    # Sort by started_at descending (newest first)
+    filtered.sort(key=lambda x: x.get("started_at", ""), reverse=True)
+
+    return JSONResponse(
+        filtered,
+        headers={"Content-Type": "application/json; charset=utf-8"}
+    )
+
+@router.get("/experiments/{run_id}/checkpoints")
+def list_checkpoints(run_id: str):
+    """
+    List all checkpoints for a training run.
+    Returns list of checkpoint metadata.
+    """
+    if run_id not in RUNS:
+        # Try to find checkpoints in filesystem
+        runs_dir = os.path.join("runs", run_id, "checkpoints")
+        if not os.path.exists(runs_dir):
+            return JSONResponse([], headers={"Content-Type": "application/json; charset=utf-8"})
+
+        checkpoints = []
+        for fname in os.listdir(runs_dir):
+            if fname.endswith(".pt"):
+                fpath = os.path.join(runs_dir, fname)
+                ckpt = {
+                    "ckpt_id": fname.replace(".pt", ""),
+                    "path": fpath,
+                    "size": os.path.getsize(fpath),
+                    "epoch": 0,  # Parse from filename
+                    "kind": "best" if "best" in fname else "last" if "last" in fname else "epoch"
+                }
+                checkpoints.append(ckpt)
+
+        return JSONResponse(checkpoints, headers={"Content-Type": "application/json; charset=utf-8"})
+
+    # For active runs, return from memory
+    run = RUNS[run_id]
+    checkpoints = run.get("checkpoints", [])
+
+    return JSONResponse(
+        checkpoints,
+        headers={"Content-Type": "application/json; charset=utf-8"}
+    )
+
+@router.get("/jobs/{job_id}/history")
+def get_training_history(job_id: str):
+    """Get historical training data from events.jsonl."""
+    events_file = os.path.join("runs", job_id, "events.jsonl")
+    if not os.path.exists(events_file):
+        return JSONResponse({"metrics": [], "logs": []}, headers={"Content-Type": "application/json; charset=utf-8"})
+    
+    try:
+        from ..core.event_logger import read_events, parse_events_by_type
+        events = read_events(events_file)
+        grouped = parse_events_by_type(events)
+        return JSONResponse({
+            "metrics": grouped.get("metric", []),
+            "logs": grouped.get("log", []),
+            "samples": grouped.get("sample_pred", []),
+            "checkpoints": grouped.get("checkpoint", [])
+        }, headers={"Content-Type": "application/json; charset=utf-8"})
+    except Exception as e:
+        return JSONResponse({"error": str(e), "metrics": [], "logs": []}, headers={"Content-Type": "application/json; charset=utf-8"})
