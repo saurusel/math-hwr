@@ -28,6 +28,6 @@ class CRNN_CTC(nn.Module):
         feats = feats.mean(dim=2)       # avg over height -> (B,C,W')
         feats = feats.permute(2,0,1)    # (T=B? no) -> (T=W', B, C)
         seq, _ = self.rnn(feats)        # (T,B,2*hidden=512)
-        logits = self.fc(seq)           # (T,B,num_classes)
+        logits = self.fc(seq)           # (T,B,num_classes) 
         T = logits.size(0)
         return logits, T

@@ -32,9 +32,9 @@ export function Toolbar({
               : 'border-slate-300 hover:border-slate-400'
           }`}
           onClick={() => onToolChange('brush')}
-          title="Brush tool (B)"
+          title="Кисть (B)"
         >
-          ✏️ Brush
+          ✏️ Кисть
         </button>
         <button
           className={`px-3 py-1 rounded-lg border ${
@@ -43,15 +43,15 @@ export function Toolbar({
               : 'border-slate-300 hover:border-slate-400'
           }`}
           onClick={() => onToolChange('eraser')}
-          title="Eraser tool (E)"
+          title="Ластик (E)"
         >
-          🩹 Eraser
+          🩹 Ластик
         </button>
       </div>
 
       {/* Brush Size */}
       <div className="flex items-center gap-2">
-        <label className="text-sm text-slate-700">Size: {brushSize}px</label>
+        <label className="text-sm text-slate-700">Размер: {brushSize}px</label>
         <input
           type="range"
           min="1"
@@ -65,7 +65,7 @@ export function Toolbar({
 
       {/* Zoom Controls */}
       <div className="flex items-center gap-2">
-        <label className="text-sm text-slate-700">Zoom:</label>
+        <label className="text-sm text-slate-700">Масштаб:</label>
         <button
           className="px-2 py-1 rounded border border-slate-300 hover:border-slate-400 text-sm"
           onClick={() => onZoomChange(Math.max(0.25, zoom - 0.25))}
@@ -101,23 +101,23 @@ export function Toolbar({
         <button
           className="px-3 py-1 rounded-lg border border-slate-300 hover:border-slate-400 text-sm"
           onClick={onResetView}
-          title="Reset zoom and pan"
+          title="Сбросить масштаб и панорамирование"
         >
-          Reset View
+          Сбросить вид
         </button>
         <button
           className="px-3 py-1 rounded-lg border border-slate-300 hover:border-slate-400 text-sm"
           onClick={onLoadFile}
-          title="Load image file"
+          title="Загрузить изображение"
         >
-          📂 Open File
+          📂 Открыть файл
         </button>
         <button
           className="px-3 py-1 rounded-lg border border-red-300 text-red-700 hover:border-red-400 hover:bg-red-50 text-sm"
           onClick={onClear}
-          title="Clear canvas"
+          title="Очистить холст"
         >
-          Clear
+          Очистить
         </button>
       </div>
     </div>

@@ -96,21 +96,21 @@ export function Experiments() {
   return (
     <div className="max-w-7xl mx-auto p-6">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-3xl font-bold text-slate-800">Experiments</h1>
+        <h1 className="text-3xl font-bold text-slate-800">Эксперименты</h1>
         <div className="flex gap-3">
           {selectedIds.size > 0 && (
             <button
               className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
               onClick={handleCompare}
             >
-              📊 Compare ({selectedIds.size})
+              📊 Сравнить ({selectedIds.size})
             </button>
           )}
           <Link
             to="/train/new"
             className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
           >
-            + New Training
+            + Новое обучение
           </Link>
         </div>
       </div>
@@ -122,7 +122,7 @@ export function Experiments() {
             <div className="md:col-span-2">
               <input
                 type="text"
-                placeholder="🔍 Search by name..."
+                placeholder="🔍 Поиск по названию..."
                 className="w-full px-4 py-2 border border-slate-300 rounded-lg"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -134,10 +134,10 @@ export function Experiments() {
                 value={modelFilter}
                 onChange={(e) => setModelFilter(e.target.value)}
               >
-                <option value="all">All Models</option>
+                <option value="all">Все модели</option>
                 <option value="M1">M1 (CRNN-CTC)</option>
-                <option value="M2">M2 (Attention)</option>
-                <option value="M3">M3 (Symbol Classifier)</option>
+                <option value="M2">M2 (Сегментация + MLP)</option>
+                <option value="M3">M3 (Классификатор символов)</option>
               </select>
             </div>
             <div>
@@ -146,11 +146,11 @@ export function Experiments() {
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
               >
-                <option value="all">All Statuses</option>
-                <option value="RUNNING">Running</option>
-                <option value="FINISHED">Finished</option>
-                <option value="FAILED">Failed</option>
-                <option value="STOPPED">Stopped</option>
+                <option value="all">Все статусы</option>
+                <option value="RUNNING">Обучается</option>
+                <option value="FINISHED">Завершено</option>
+                <option value="FAILED">Ошибка</option>
+                <option value="STOPPED">Остановлено</option>
               </select>
             </div>
           </div>
@@ -159,22 +159,22 @@ export function Experiments() {
 
       {loading ? (
         <div className="bg-white rounded-xl shadow p-12 text-center text-slate-400">
-          Loading experiments...
+          Загрузка экспериментов...
         </div>
       ) : filteredExperiments.length === 0 ? (
         <div className="bg-white rounded-xl shadow p-12 text-center">
           {experiments.length === 0 ? (
             <>
-              <p className="text-slate-600 mb-4">No experiments yet</p>
+              <p className="text-slate-600 mb-4">Экспериментов пока нет</p>
               <Link
                 to="/train/new"
                 className="inline-block px-6 py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
               >
-                Create Your First Training Run
+                Создать первое обучение
               </Link>
             </>
           ) : (
-            <p className="text-slate-600">No experiments match your filters</p>
+            <p className="text-slate-600">Нет экспериментов, соответствующих фильтрам</p>
           )}
         </div>
       ) : (
@@ -191,19 +191,19 @@ export function Experiments() {
                   />
                 </th>
                 <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">
-                  Run Name
+                  Название
                 </th>
                 <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">
-                  Model
+                  Модель
                 </th>
                 <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">
-                  Status
+                  Статус
                 </th>
                 <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">
-                  Started
+                  Начало
                 </th>
                 <th className="px-6 py-3 text-left text-sm font-semibold text-slate-700">
-                  Actions
+                  Действия
                 </th>
               </tr>
             </thead>
@@ -234,32 +234,38 @@ export function Experiments() {
                           : 'bg-slate-100 text-slate-700'
                       }`}
                     >
-                      {exp.status}
+                      {exp.status === 'RUNNING' ? 'Обучается' :
+                       exp.status === 'FINISHED' ? 'Завершено' :
+                       exp.status === 'FAILED' ? 'Ошибка' :
+                       exp.status === 'STOPPED' ? 'Остановлено' : exp.status}
                     </span>
                   </td>
                   <td className="px-6 py-4 text-sm text-slate-600">
-                    {new Date(exp.started_at).toLocaleString()}
+                    {new Date(exp.started_at).toLocaleString('ru-RU')}
                   </td>
                   <td className="px-6 py-4 text-sm">
-                    <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2">
                       <Link
                         to={`/train/monitor?job=${exp.run_id}`}
-                        className="text-emerald-600 hover:text-emerald-700 font-medium"
+                        className="px-3 py-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 text-xs font-medium"
                       >
-                        Monitor
-                      </Link>
-                      <Link
-                        to={`/train/models?run=${exp.run_id}`}
-                        className="text-blue-600 hover:text-blue-700 font-medium"
-                      >
-                        Models
+                        📊 Монитор
                       </Link>
                       <button
-                        onClick={() => handleDuplicate(exp.run_id)}
-                        className="text-purple-600 hover:text-purple-700 font-medium"
-                        title="Duplicate configuration"
+                        onClick={async () => {
+                          if (confirm(`Удалить обучение "${exp.run_name}"?\n\nВсе чекпоинты и данные будут удалены без возможности восстановления.`)) {
+                            try {
+                              // TODO: implement deleteRun API
+                              alert('Функция удаления будет реализована');
+                            } catch (err) {
+                              alert('Ошибка удаления');
+                            }
+                          }
+                        }}
+                        className="px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 text-xs font-medium"
+                        title="Удалить обучение"
                       >
-                        📋 Duplicate
+                        🗑️ Удалить
                       </button>
                     </div>
                   </td>

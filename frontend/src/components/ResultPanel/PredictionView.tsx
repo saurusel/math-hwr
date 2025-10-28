@@ -5,9 +5,11 @@ interface PredictionViewProps {
   tokens?: string[];
   device?: string;
   ckpt?: string;
+  error?: string;
+  modelType?: string;
 }
 
-export function PredictionView({ text, tokens, device, ckpt }: PredictionViewProps) {
+export function PredictionView({ text, tokens, device, ckpt, error, modelType }: PredictionViewProps) {
   const [showTokens, setShowTokens] = useState(false);
   const [copySuccess, setCopySuccess] = useState(false);
 
@@ -24,11 +26,11 @@ export function PredictionView({ text, tokens, device, ckpt }: PredictionViewPro
   // Check if we have a result (even if empty text)
   const hasResult = text !== undefined && text !== null;
 
-  if (!hasResult && !tokens && !device && !ckpt) {
+  if (!hasResult && !tokens && !device && !ckpt && !error) {
     return (
       <div className="bg-white rounded-xl shadow p-4">
         <div className="text-slate-400 text-center py-8">
-          No results yet. Draw or load an image and click "Recognize".
+          Результатов пока нет. Нарисуйте или загрузите изображение и нажмите "Распознать".
         </div>
       </div>
     );
@@ -36,15 +38,38 @@ export function PredictionView({ text, tokens, device, ckpt }: PredictionViewPro
 
   return (
     <div className="bg-white rounded-xl shadow p-4 space-y-3">
+      {/* Error message for M2 segmentation failures */}
+      {error && modelType === 'M2_Segmentation_MLP' && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-3">
+          <div className="text-sm font-medium text-red-800 mb-1">
+            Ошибка сегментации:
+          </div>
+          <div className="text-sm text-red-700">
+            {error}
+          </div>
+          <div className="text-xs text-red-600 mt-2">
+            💡 Возможные причины:
+            <ul className="list-disc list-inside mt-1 space-y-0.5">
+              <li>Изображение слишком светлое или темное</li>
+              <li>Очень низкий контраст</li>
+              <li>Символы слишком маленькие или большие</li>
+              <li>Попробуйте использовать модель M1 (CRNN-CTC)</li>
+            </ul>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1">
-          <label className="text-sm font-medium text-slate-700 block mb-1">Recognized Text:</label>
+          <label className="text-sm font-medium text-slate-700 block mb-1">Распознанный текст:</label>
           <div className={`font-mono text-lg p-3 rounded border break-all ${
             text && text.length > 0
               ? 'bg-slate-50 border-slate-200'
+              : error
+              ? 'bg-red-50 border-red-300'
               : 'bg-amber-50 border-amber-300'
           }`}>
-            {text && text.length > 0 ? text : '(empty prediction - model may not be trained properly)'}
+            {text && text.length > 0 ? text : error ? '(ошибка сегментации - символы не обнаружены)' : '(пустое предсказание - модель может быть не обучена должным образом)'}
           </div>
         </div>
         <button
@@ -55,7 +80,7 @@ export function PredictionView({ text, tokens, device, ckpt }: PredictionViewPro
           }`}
           onClick={handleCopy}
         >
-          {copySuccess ? '✓ Copied!' : '📋 Copy'}
+          {copySuccess ? '✓ Скопировано!' : '📋 Копировать'}
         </button>
       </div>
 
@@ -66,7 +91,7 @@ export function PredictionView({ text, tokens, device, ckpt }: PredictionViewPro
             onClick={() => setShowTokens(!showTokens)}
           >
             <span>{showTokens ? '▼' : '▶'}</span>
-            Tokens ({tokens.length})
+            Токены ({tokens.length})
           </button>
           {showTokens && (
             <div className="mt-2 font-mono text-sm bg-slate-50 p-3 rounded border border-slate-200 flex flex-wrap gap-1">
@@ -85,8 +110,8 @@ export function PredictionView({ text, tokens, device, ckpt }: PredictionViewPro
 
       {(device || ckpt) && (
         <div className="text-xs text-slate-500 space-y-1">
-          {device && <div>Device: {device}</div>}
-          {ckpt && <div>Checkpoint: {ckpt}</div>}
+          {device && <div>Устройство: {device}</div>}
+          {ckpt && <div>Чекпоинт: {ckpt}</div>}
         </div>
       )}
     </div>

@@ -11,9 +11,9 @@ export function SampleGallery({ samples }: SampleGalleryProps) {
   if (samples.length === 0) {
     return (
       <div className="bg-white rounded-xl shadow p-6">
-        <h2 className="text-lg font-semibold text-slate-700 mb-4">Sample Predictions</h2>
+        <h2 className="text-lg font-semibold text-slate-700 mb-4">Примеры предсказаний</h2>
         <div className="text-center text-slate-400 py-12">
-          No sample predictions yet. They will appear during training...
+          Примеры предсказаний пока отсутствуют. Они появятся во время обучения...
         </div>
       </div>
     );
@@ -27,10 +27,10 @@ export function SampleGallery({ samples }: SampleGalleryProps) {
     <div className="bg-white rounded-xl shadow p-6">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-slate-700">
-          Sample Predictions (Epoch {latestSample.epoch})
+          Примеры предсказаний (Эпоха {latestSample.epoch})
         </h2>
         <div className="text-sm text-slate-600">
-          Showing {displaySamples.length} of {latestSample.items.length} samples
+          Показано {displaySamples.length} из {latestSample.items.length} примеров
         </div>
       </div>
 
@@ -54,11 +54,11 @@ export function SampleGallery({ samples }: SampleGalleryProps) {
                   <span className="text-xs font-mono text-slate-500">{sample.id}</span>
                   {isMatch ? (
                     <span className="px-2 py-0.5 bg-emerald-600 text-white rounded text-xs font-semibold">
-                      ✓ Match
+                      ✓ Совпадение
                     </span>
                   ) : (
                     <span className="px-2 py-0.5 bg-red-600 text-white rounded text-xs font-semibold">
-                      ✗ Error
+                      ✗ Ошибка
                     </span>
                   )}
                 </div>
@@ -66,7 +66,7 @@ export function SampleGallery({ samples }: SampleGalleryProps) {
                   className="text-xs text-slate-600 hover:text-slate-900"
                   onClick={() => setExpandedIdx(isExpanded ? null : idx)}
                 >
-                  {isExpanded ? '▼ Collapse' : '▶ Expand'}
+                  {isExpanded ? '▼ Свернуть' : '▶ Развернуть'}
                 </button>
               </div>
 
@@ -85,11 +85,11 @@ export function SampleGallery({ samples }: SampleGalleryProps) {
               {/* Predictions */}
               <div className="space-y-2 font-mono text-sm">
                 <div className="flex items-start gap-2">
-                  <span className="text-slate-600 font-semibold min-w-[60px]">Target:</span>
+                  <span className="text-slate-600 font-semibold min-w-[60px]">Цель:</span>
                   <span className="text-slate-900 break-all">{sample.target}</span>
                 </div>
                 <div className="flex items-start gap-2">
-                  <span className="text-slate-600 font-semibold min-w-[60px]">Pred:</span>
+                  <span className="text-slate-600 font-semibold min-w-[60px]">Предск.:</span>
                   <span
                     className={`break-all ${
                       isMatch ? 'text-emerald-700 font-semibold' : 'text-red-700'
@@ -103,7 +103,7 @@ export function SampleGallery({ samples }: SampleGalleryProps) {
               {/* Character-level diff if error */}
               {!isMatch && isExpanded && (
                 <div className="mt-3 p-3 bg-white rounded border border-slate-200">
-                  <div className="text-xs text-slate-600 mb-2">Character Alignment:</div>
+                  <div className="text-xs text-slate-600 mb-2">Посимвольное выравнивание:</div>
                   <div className="font-mono text-xs space-y-1">
                     <div className="flex flex-wrap gap-1">
                       <span className="text-slate-500">Tgt:</span>
@@ -142,11 +142,11 @@ export function SampleGallery({ samples }: SampleGalleryProps) {
       {/* Statistics */}
       <div className="mt-4 p-3 bg-slate-50 rounded-lg">
         <div className="text-sm text-slate-700">
-          <strong>Accuracy:</strong>{' '}
+          <strong>Точность:</strong>{' '}
           {latestSample.items.length > 0
             ? `${((latestSample.items.filter((s) => s.target === s.pred).length / latestSample.items.length) * 100).toFixed(1)}%`
             : 'N/A'}{' '}
-          ({latestSample.items.filter((s) => s.target === s.pred).length} / {latestSample.items.length} correct)
+          ({latestSample.items.filter((s) => s.target === s.pred).length} / {latestSample.items.length} правильных)
         </div>
       </div>
     </div>

@@ -13,13 +13,13 @@ import numpy as np
 
 from ..data.seg_dataset import SegmentedCharDataset, collate_seg_mlp
 from ..data.dataset import HWRDataset  # For validation on full expressions
+from ..data.augmentations import augment_training_batch  # NEW: Augmentations
 from ..models.seg_mlp import SegmentationOCR
 from ..tokenizer import TOKEN_LIST
 from ..metrics import cer as cer_fn, wer as wer_fn
 from ..parser import is_valid_token_stream
-from ..segmentation import segment_and_prepare
+from ..segmentation_improved import segment_and_prepare_improved
 from ..event_logger import EventLogger
-from ..grouping import group_tokens
 
 
 def _atomic_save(obj, path):
@@ -66,6 +66,9 @@ def train_seg_mlp(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[str
     events_file = os.path.join(run_dir, "events.jsonl")
     logger = EventLogger(events_file)
     logger.log_status("RUNNING", "Training M2 (Segmentation + MLP) started")
+
+    # Emit RUNNING status immediately so UI updates
+    emit({"event": "status", "status": "RUNNING", "message": "Training started"})
 
     # Stop signal
     stop_file = os.path.join(run_dir, "STOP_REQUESTED")
@@ -118,7 +121,11 @@ def train_seg_mlp(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[str
         "model_type": "M2_Segmentation_MLP"
     }
     emit(stats_event)
-    logger.log_event(stats_event)
+    logger.log_dataset_stats(
+        train_samples=len(train_ds),
+        val_samples=len(val_full_ds),
+        stats={"train_characters": len(train_ds), "model_type": "M2_Segmentation_MLP"}
+    )
 
     # Training loop
     global_step = 0
@@ -142,6 +149,10 @@ def train_seg_mlp(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[str
                 break
 
             images = images.to(device)  # (batch_size, 1, H, W)
+
+            # AUGMENTATIONS (NEW!) - Apply before training
+            augment_config = config.get("augment", {"invert": True, "noise": True, "blur": True})
+            images = augment_training_batch(images, augment_config)
 
             # Convert labels to IDs
             label_ids = []
@@ -194,6 +205,7 @@ def train_seg_mlp(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[str
         val_correct_seqs = 0
         val_total_seqs = 0
         val_correct_seg = 0
+        samples_list = []  # For sample predictions
 
         with torch.no_grad():
             for val_idx, val_row in enumerate(val_full_ds.rows[:min(50, len(val_full_ds.rows))]):
@@ -206,12 +218,17 @@ def train_seg_mlp(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[str
                 img_pil = Image.open(img_path).convert("L")
                 img_arr = np.array(img_pil)
 
-                # Ground truth - use grouped tokens
-                raw_gt = (val_row.get("target_canonical") or val_row["target"]).split()
-                gt_tokens = group_tokens(raw_gt)
+                # Ground truth - flat tokens (no grouping)
+                gt_tokens = (val_row.get("target_canonical") or val_row["target"]).split()
 
-                # Segment and classify
-                segments = segment_and_prepare(img_arr, target_size=(32, 32), min_area=5, max_area=4000)
+                # Segment and classify using IMPROVED segmentation
+                segments = segment_and_prepare_improved(
+                    img_arr,
+                    target_size=(32, 32),
+                    adaptive=True,
+                    split_wide=False,
+                    morph_strength="light"
+                )
 
                 if not segments:
                     val_total_seqs += 1
@@ -229,6 +246,21 @@ def train_seg_mlp(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[str
                 logits = model(batch_segs)
                 pred_ids = torch.argmax(logits, dim=1).cpu().tolist()
                 pred_tokens = [TOKEN_LIST[pid] if pid < len(TOKEN_LIST) else "?" for pid in pred_ids]
+
+                # Save sample predictions (first 10)
+                if len(samples_list) < 10:
+                    import io, base64
+                    buf = io.BytesIO()
+                    img_pil.save(buf, format="PNG")
+                    img_b64 = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('ascii')}"
+
+                    samples_list.append({
+                        "id": f"val_{val_idx}",
+                        "target": " ".join(gt_tokens),
+                        "pred": " ".join(pred_tokens),
+                        "ok": pred_tokens == gt_tokens,
+                        "image_b64": img_b64
+                    })
 
                 # Check if segmentation count matches
                 if len(pred_tokens) == len(gt_tokens):
@@ -271,7 +303,25 @@ def train_seg_mlp(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[str
             "best_seq_acc": best_seq_acc
         }
         emit(epoch_metrics)
-        logger.log_event(epoch_metrics)
+        logger.log_metric(epoch, {
+            "train_loss": train_loss,
+            "train_char_acc": train_char_acc,
+            "val_char_acc": val_char_acc,
+            "val_seq_acc": val_seq_acc,
+            "val_seg_acc": val_seg_acc,
+            "lr": scheduler.get_last_lr()[0] if scheduler else config["train"]["lr"],
+            "best_char_acc": best_char_acc,
+            "best_seq_acc": best_seq_acc
+        })
+
+        # Emit sample predictions with images
+        if samples_list:
+            emit({
+                "event": "sample_pred",
+                "epoch": epoch,
+                "items": samples_list
+            })
+            logger.log_sample_pred(epoch, samples_list)
 
         # Save checkpoint
         ckpt_data = {
@@ -291,7 +341,12 @@ def train_seg_mlp(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[str
         if improved:
             _atomic_save(ckpt_data, os.path.join(run_dir, "seg_mlp_best.pt"))
             emit({"event": "new_best", "epoch": epoch, "char_acc": val_char_acc})
-            logger.log_event({"event": "new_best", "epoch": epoch, "char_acc": val_char_acc})
+            logger.log_checkpoint(
+                kind="best",
+                path="seg_mlp_best.pt",
+                epoch=epoch,
+                metrics={"char_acc": val_char_acc, "seq_acc": val_seq_acc}
+            )
 
     # === FINAL ===
     # Save final model

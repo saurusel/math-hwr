@@ -31,41 +31,57 @@ export function Monitor() {
       .then(async (job) => {
         setCurrentJob(job);
 
-        // If job is FINISHED, try to load historical data
-        if (job.status === 'FINISHED') {
+        // If job is FINISHED, STOPPED, or FAILED - load historical data, DON'T use SSE
+        if (['FINISHED', 'STOPPED', 'FAILED'].includes(job.status)) {
           setLoadingHistory(true);
           try {
             const history = await getTrainingHistory(jobId);
-            console.log('[Monitor] Loaded historical data:', history.metrics.length, 'metrics');
+            console.log(`[Monitor] Loaded history for ${job.status} job:`, {
+              metrics: history.metrics.length,
+              logs: history.logs.length,
+              samples: history.samples?.length || 0
+            });
 
             // Load metrics into store
             history.metrics.forEach(addMetric);
             history.logs.forEach(addLog);
+            if (history.samples) {
+              history.samples.forEach(addSamples);
+            }
           } catch (err) {
             console.error('Failed to load history:', err);
           } finally {
             setLoadingHistory(false);
           }
+
+          // IMPORTANT: Don't create SSE client for finished jobs
+          return;
         }
+
+        // For RUNNING jobs only - connect to SSE
+        const client = new TrainingSSEClient(jobId, {
+          onMetric: (metric) => {
+            addMetric(metric);
+            // Update current epoch in job
+            setCurrentJob((prev) => prev ? { ...prev, current_epoch: metric.epoch } : null);
+          },
+          onLog: addLog,
+          onSamplePred: addSamples,
+          onCheckpoint: addCheckpoint,
+          onStatus: (status) => {
+            setCurrentJob((prev) => prev ? { ...prev, status: status.status } : null);
+          },
+        });
+
+        client.connect();
+        setSSEClient(client);
       })
       .catch(console.error);
 
-    // Connect SSE (will handle FINISHED jobs gracefully)
-    const client = new TrainingSSEClient(jobId, {
-      onMetric: addMetric,
-      onLog: addLog,
-      onSamplePred: addSamples,
-      onCheckpoint: addCheckpoint,
-      onStatus: (status) => {
-        setCurrentJob((prev) => prev ? { ...prev, status: status.status } : null);
-      },
-    });
-
-    client.connect();
-    setSSEClient(client);
-
     return () => {
-      client.disconnect();
+      if (sseClient) {
+        sseClient.disconnect();
+      }
     };
   }, [jobId]);
 
@@ -73,7 +89,7 @@ export function Monitor() {
     return (
       <div className="max-w-7xl mx-auto p-6">
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-800">
-          No job ID provided
+          ID задачи не указан
         </div>
       </div>
     );
@@ -93,19 +109,24 @@ export function Monitor() {
             currentJob?.status === 'FAILED' ? 'bg-red-100 text-red-800' :
             'bg-slate-100 text-slate-800'
           }`}>
-            {currentJob?.status || 'UNKNOWN'}
+            {currentJob?.status === 'RUNNING' ? 'ОБУЧЕНИЕ' :
+             currentJob?.status === 'STOPPING' ? 'ОСТАНОВКА' :
+             currentJob?.status === 'FINISHED' ? 'ЗАВЕРШЕНО' :
+             currentJob?.status === 'STOPPED' ? 'ОСТАНОВЛЕНО' :
+             currentJob?.status === 'FAILED' ? 'ОШИБКА' :
+             currentJob?.status || 'ЗАГРУЗКА...'}
           </span>
           <span className="text-slate-600">
-            Epoch: {currentJob?.current_epoch || 0}
+            Эпоха: {metrics.length > 0 ? metrics[metrics.length - 1].epoch : (currentJob?.current_epoch || 0)}
           </span>
           {currentJob?.status === 'FINISHED' && metrics.length === 0 && !loadingHistory && (
             <span className="px-3 py-1 bg-amber-100 text-amber-800 rounded text-xs">
-              ⚠ No historical data found. This job may have been trained before events persistence was added.
+              ⚠ Исторические данные не найдены. Эта задача могла быть обучена до добавления сохранения событий.
             </span>
           )}
           {loadingHistory && (
             <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded text-xs">
-              📊 Loading historical data...
+              📊 Загрузка исторических данных...
             </span>
           )}
         </div>
@@ -120,25 +141,25 @@ export function Monitor() {
                   : 'bg-red-600 hover:bg-red-700 text-white'
               }`}
               onClick={async () => {
-                if (!confirm('Stop training early? The current checkpoint will be saved.\n\nThis will finish the current epoch and save checkpoint_latest.pt.\n\nBest checkpoint will be preserved if better than current epoch.')) {
+                if (!confirm('Остановить обучение досрочно? Текущий чекпоинт будет сохранен.\n\nЭто завершит текущую эпоху и сохранит checkpoint_latest.pt.\n\nЛучший чекпоинт будет сохранен, если он лучше текущей эпохи.')) {
                   return;
                 }
                 setIsStopping(true);
                 try {
                   await stopJob(jobId);
-                  warning('Training stop requested. Finishing current epoch and saving checkpoint...');
+                  warning('Запрошена остановка обучения. Завершаем текущую эпоху и сохраняем чекпоинт...');
                 } catch (err) {
-                  error(err instanceof Error ? err.message : 'Failed to stop training');
+                  error(err instanceof Error ? err.message : 'Не удалось остановить обучение');
                   setIsStopping(false);
                 }
               }}
               disabled={isStopping || currentJob?.status === 'STOPPING'}
             >
-              {currentJob?.status === 'STOPPING' ? '⏳ Finishing epoch...' : isStopping ? '⏳ Stopping...' : '⏹️ Stop Training Early'}
+              {currentJob?.status === 'STOPPING' ? '⏳ Завершаем эпоху...' : isStopping ? '⏳ Остановка...' : '⏹️ Остановить обучение'}
             </button>
             {currentJob?.status === 'STOPPING' && (
               <span className="text-sm text-orange-700">
-                Stopping gracefully... Please wait for current epoch to complete.
+                Корректная остановка... Пожалуйста, дождитесь завершения текущей эпохи.
               </span>
             )}
           </div>
@@ -154,56 +175,50 @@ export function Monitor() {
       {/* Metrics Table */}
       {metrics.length > 0 && (
         <div className="bg-white rounded-xl shadow p-6">
-          <h2 className="text-lg font-semibold text-slate-700 mb-4">Latest Metrics (Epoch {metrics[metrics.length - 1]?.epoch})</h2>
+          <h2 className="text-lg font-semibold text-slate-700 mb-4">Последние метрики (Эпоха {metrics[metrics.length - 1]?.epoch})</h2>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             {/* Error Rates */}
             {metrics[metrics.length - 1]?.cer !== undefined && (
               <div className="bg-slate-50 p-4 rounded-lg">
-                <div className="text-sm text-slate-600">CER</div>
+                <div className="text-sm text-slate-600">Ошибка символов (CER)</div>
                 <div className="text-2xl font-bold text-emerald-700">{(metrics[metrics.length - 1].cer! * 100).toFixed(2)}%</div>
-              </div>
-            )}
-            {metrics[metrics.length - 1]?.wer !== undefined && (
-              <div className="bg-slate-50 p-4 rounded-lg">
-                <div className="text-sm text-slate-600">WER</div>
-                <div className="text-2xl font-bold text-blue-700">{(metrics[metrics.length - 1].wer! * 100).toFixed(2)}%</div>
               </div>
             )}
             {metrics[metrics.length - 1]?.exact !== undefined && (
               <div className="bg-slate-50 p-4 rounded-lg">
-                <div className="text-sm text-slate-600">Exact Match</div>
+                <div className="text-sm text-slate-600">Полное совпадение</div>
                 <div className="text-2xl font-bold text-purple-700">{(metrics[metrics.length - 1].exact! * 100).toFixed(2)}%</div>
               </div>
             )}
             {metrics[metrics.length - 1]?.valid !== undefined && (
               <div className="bg-slate-50 p-4 rounded-lg">
-                <div className="text-sm text-slate-600">Valid %</div>
+                <div className="text-sm text-slate-600">Валидность %</div>
                 <div className="text-2xl font-bold text-indigo-700">{(metrics[metrics.length - 1].valid! * 100).toFixed(2)}%</div>
               </div>
             )}
 
             {/* Learning Info */}
             <div className="bg-slate-50 p-4 rounded-lg">
-              <div className="text-sm text-slate-600">Learning Rate</div>
+              <div className="text-sm text-slate-600">Скорость обучения</div>
               <div className="text-xl font-bold font-mono">{metrics[metrics.length - 1]?.lr.toExponential(2)}</div>
             </div>
 
             {/* Performance */}
             {metrics[metrics.length - 1]?.epoch_time_sec !== undefined && (
               <div className="bg-slate-50 p-4 rounded-lg">
-                <div className="text-sm text-slate-600">Epoch Time</div>
-                <div className="text-2xl font-bold">{metrics[metrics.length - 1].epoch_time_sec!.toFixed(1)}s</div>
+                <div className="text-sm text-slate-600">Время эпохи</div>
+                <div className="text-2xl font-bold">{metrics[metrics.length - 1].epoch_time_sec!.toFixed(1)}с</div>
               </div>
             )}
             {metrics[metrics.length - 1]?.samples_processed !== undefined && (
               <div className="bg-slate-50 p-4 rounded-lg">
-                <div className="text-sm text-slate-600">Samples/Epoch</div>
+                <div className="text-sm text-slate-600">Примеров/Эпоха</div>
                 <div className="text-2xl font-bold">{metrics[metrics.length - 1].samples_processed}</div>
               </div>
             )}
             {metrics[metrics.length - 1]?.batches_processed !== undefined && (
               <div className="bg-slate-50 p-4 rounded-lg">
-                <div className="text-sm text-slate-600">Batches/Epoch</div>
+                <div className="text-sm text-slate-600">Батчей/Эпоха</div>
                 <div className="text-2xl font-bold">{metrics[metrics.length - 1].batches_processed}</div>
               </div>
             )}
@@ -213,7 +228,7 @@ export function Monitor() {
 
       {/* Logs */}
       <div className="bg-white rounded-xl shadow p-6">
-        <h2 className="text-lg font-semibold text-slate-700 mb-4">Logs</h2>
+        <h2 className="text-lg font-semibold text-slate-700 mb-4">Логи</h2>
         <div className="bg-slate-900 text-slate-100 p-4 rounded-lg font-mono text-sm max-h-96 overflow-y-auto">
           {logs.length > 0 ? (
             logs.map((log, i) => (
@@ -222,7 +237,7 @@ export function Monitor() {
               </div>
             ))
           ) : (
-            <div className="text-slate-400">No logs yet</div>
+            <div className="text-slate-400">Логов пока нет</div>
           )}
         </div>
       </div>

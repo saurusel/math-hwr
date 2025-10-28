@@ -82,7 +82,7 @@ export function Models() {
     return (
       <div className="max-w-7xl mx-auto p-6">
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-800">
-          No run ID provided. Please select a run from experiments.
+          ID запуска не указан. Пожалуйста, выберите запуск из экспериментов.
         </div>
       </div>
     );
@@ -90,20 +90,20 @@ export function Models() {
 
   return (
     <div className="max-w-7xl mx-auto p-6">
-      <h1 className="text-3xl font-bold text-slate-800 mb-6">Models & Checkpoints</h1>
+      <h1 className="text-3xl font-bold text-slate-800 mb-6">Модели и чекпоинты</h1>
 
       <div className="grid grid-cols-12 gap-6">
         {/* Left: Checkpoints List */}
         <div className="col-span-4">
           <div className="bg-white rounded-xl shadow p-4">
             <h2 className="text-lg font-semibold text-slate-700 mb-4">
-              Checkpoints ({checkpoints.length})
+              Чекпоинты ({checkpoints.length})
             </h2>
 
             {loading ? (
-              <div className="text-center text-slate-400 py-8">Loading...</div>
+              <div className="text-center text-slate-400 py-8">Загрузка...</div>
             ) : checkpoints.length === 0 ? (
-              <div className="text-center text-slate-400 py-8">No checkpoints yet</div>
+              <div className="text-center text-slate-400 py-8">Чекпоинтов пока нет</div>
             ) : (
               <div className="space-y-2">
                 {checkpoints.map((ckpt) => (
@@ -119,16 +119,16 @@ export function Models() {
                     <div className="flex items-start justify-between">
                       <div>
                         <div className="font-medium text-slate-800">
-                          Epoch {ckpt.epoch}
+                          Эпоха {ckpt.epoch}
                         </div>
                         <div className="text-xs text-slate-500">
-                          {ckpt.kind === 'best' && '⭐ Best'}
-                          {ckpt.kind === 'last' && '📍 Latest'}
-                          {ckpt.kind === 'epoch' && '📦 Checkpoint'}
+                          {ckpt.kind === 'best' && '⭐ Лучший'}
+                          {ckpt.kind === 'last' && '📍 Последний'}
+                          {ckpt.kind === 'epoch' && '📦 Чекпоинт'}
                         </div>
                       </div>
                       <div className="text-xs text-slate-500">
-                        {(ckpt.size / 1024 / 1024).toFixed(1)} MB
+                        {(ckpt.size / 1024 / 1024).toFixed(1)} МБ
                       </div>
                     </div>
                     {ckpt.metrics_at_save && (
@@ -161,7 +161,7 @@ export function Models() {
                       }`}
                       onClick={() => setActiveTab('info')}
                     >
-                      Info
+                      Информация
                     </button>
                     <button
                       className={`px-6 py-3 font-medium ${
@@ -171,7 +171,7 @@ export function Models() {
                       }`}
                       onClick={() => setActiveTab('test')}
                     >
-                      Quick Test
+                      Быстрый тест
                     </button>
                   </div>
                 </div>
@@ -181,27 +181,29 @@ export function Models() {
                     <div className="space-y-4">
                       <div>
                         <h3 className="text-lg font-semibold text-slate-800 mb-3">
-                          Checkpoint Details
+                          Детали чекпоинта
                         </h3>
                         <div className="grid grid-cols-2 gap-4">
                           <div className="bg-slate-50 p-3 rounded-lg">
-                            <div className="text-sm text-slate-600">Epoch</div>
+                            <div className="text-sm text-slate-600">Эпоха</div>
                             <div className="text-xl font-bold">{selectedCheckpoint.epoch}</div>
                           </div>
                           <div className="bg-slate-50 p-3 rounded-lg">
-                            <div className="text-sm text-slate-600">Type</div>
+                            <div className="text-sm text-slate-600">Тип</div>
                             <div className="text-xl font-bold capitalize">
-                              {selectedCheckpoint.kind}
+                              {selectedCheckpoint.kind === 'best' ? 'Лучший' :
+                               selectedCheckpoint.kind === 'last' ? 'Последний' :
+                               selectedCheckpoint.kind === 'epoch' ? 'Эпоха' : selectedCheckpoint.kind}
                             </div>
                           </div>
                           <div className="bg-slate-50 p-3 rounded-lg">
-                            <div className="text-sm text-slate-600">Size</div>
+                            <div className="text-sm text-slate-600">Размер</div>
                             <div className="text-xl font-bold">
-                              {(selectedCheckpoint.size / 1024 / 1024).toFixed(1)} MB
+                              {(selectedCheckpoint.size / 1024 / 1024).toFixed(1)} МБ
                             </div>
                           </div>
                           <div className="bg-slate-50 p-3 rounded-lg">
-                            <div className="text-sm text-slate-600">Path</div>
+                            <div className="text-sm text-slate-600">Путь</div>
                             <div className="text-sm font-mono text-slate-700 truncate">
                               {selectedCheckpoint.path.split('/').pop()}
                             </div>
@@ -212,7 +214,7 @@ export function Models() {
                       {selectedCheckpoint.metrics_at_save && (
                         <div>
                           <h3 className="text-lg font-semibold text-slate-800 mb-3">
-                            Metrics at Save
+                            Метрики при сохранении
                           </h3>
                           <div className="grid grid-cols-3 gap-4">
                             {Object.entries(selectedCheckpoint.metrics_at_save).map(
@@ -236,16 +238,16 @@ export function Models() {
                           className="px-6 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700"
                           onClick={() => handlePromote(selectedCheckpoint.ckpt_id)}
                         >
-                          ⭐ Promote to Production
+                          ⭐ Отметить как production
                         </button>
                         <button
                           className="px-6 py-2 border border-slate-300 rounded-lg hover:bg-slate-50"
                           onClick={() => {
                             // Download checkpoint (future implementation)
-                            alert('Download feature coming soon');
+                            alert('Функция загрузки скоро появится');
                           }}
                         >
-                          ⬇️ Download
+                          ⬇️ Скачать
                         </button>
                         <button
                           className="px-6 py-2 border border-red-300 text-red-700 rounded-lg hover:bg-red-50"
@@ -253,11 +255,11 @@ export function Models() {
                           disabled={selectedCheckpoint.kind === 'best'}
                           title={
                             selectedCheckpoint.kind === 'best'
-                              ? 'Cannot delete best checkpoint'
-                              : 'Delete checkpoint'
+                              ? 'Нельзя удалить лучший чекпоинт'
+                              : 'Удалить чекпоинт'
                           }
                         >
-                          🗑️ Delete
+                          🗑️ Удалить
                         </button>
                       </div>
                     </div>
@@ -269,7 +271,7 @@ export function Models() {
             </div>
           ) : (
             <div className="bg-white rounded-xl shadow p-12 text-center text-slate-400">
-              Select a checkpoint to view details
+              Выберите чекпоинт для просмотра деталей
             </div>
           )}
         </div>

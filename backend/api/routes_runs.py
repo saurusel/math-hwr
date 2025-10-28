@@ -1,5 +1,8 @@
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from .routes_train import RUNS
+import os
+import json
 
 router = APIRouter()
 
@@ -29,6 +32,66 @@ def run_detail(run_id: str):
         "step": r.get("step", 0),
         "last_error": r.get("last_error")
     }
+
+@router.get("/{run_id}/history")
+def get_training_history(run_id: str):
+    """
+    Load complete training history from events.jsonl
+    Works for FINISHED, STOPPED, or FAILED runs
+    """
+    events_file = f"runs/{run_id}/events.jsonl"
+
+    if not os.path.exists(events_file):
+        raise HTTPException(404, detail=f"No training history found for {run_id}")
+
+    metrics = []
+    logs = []
+    samples = []
+
+    try:
+        with open(events_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                if not line.strip():
+                    continue
+
+                try:
+                    event = json.loads(line)
+
+                    # Metric events (epoch_end)
+                    if event.get("event") == "epoch_end":
+                        metrics.append({
+                            "epoch": event["epoch"],
+                            **event["metrics"]
+                        })
+
+                    # Log events
+                    elif event.get("type") == "log":
+                        logs.append({
+                            "ts": event.get("timestamp", ""),
+                            "line": event.get("message", "")
+                        })
+
+                    # Sample prediction events (check both "event" and "type")
+                    elif event.get("event") == "sample_pred" or event.get("type") == "sample_pred":
+                        samples.append({
+                            "epoch": event.get("epoch", 0),
+                            "items": event.get("items", [])
+                        })
+
+                except json.JSONDecodeError:
+                    continue
+
+        return JSONResponse(
+            {
+                "metrics": metrics,
+                "logs": logs,
+                "samples": samples
+            },
+            headers={"Content-Type": "application/json; charset=utf-8"}
+        )
+
+    except Exception as e:
+        raise HTTPException(500, detail=f"Failed to load history: {str(e)}")
 
 @router.get("/checkpoints")
 def list_checkpoints():

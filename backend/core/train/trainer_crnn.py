@@ -8,6 +8,7 @@ from PIL import Image
 
 from ..data.dataset import HWRDataset
 from ..data.collate import collate_ctc
+from ..data.augmentations import augment_training_batch  # NEW: Augmentations
 from ..models.crnn_ctc import CRNN_CTC
 from ..tokenizer import TOKEN_LIST
 from ..metrics import cer as cer_fn, wer as wer_fn
@@ -232,6 +233,10 @@ def train_crnn_ctc(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[st
             x, y, y_lens, tokens = batch
             x = x.to(device); y = y.to(device)
 
+            # AUGMENTATIONS (NEW!) - Apply before training
+            augment_config = config.get("augment", {"invert": True, "noise": True, "blur": True})
+            x = augment_training_batch(x, augment_config)
+
             # CTC requires input length T >= target length
             with torch.no_grad():
                 dummy_logits, Tcur = model(x[:1])
@@ -280,6 +285,9 @@ def train_crnn_ctc(config: Dict[str, Any], run_dir: str, emit: Callable[[Dict[st
                         "epoch": epoch,
                         "items": samples_list
                     })
+
+                    # IMPORTANT: Also save to events.jsonl for history
+                    logger.log_sample_pred(epoch, samples_list)
 
             if ckpt_every_steps > 0 and (global_step % ckpt_every_steps == 0):
                 _atomic_save({

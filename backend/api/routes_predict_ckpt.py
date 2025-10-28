@@ -8,9 +8,11 @@ import numpy as np
 import torch
 
 from ..core.models.crnn_ctc import CRNN_CTC
+from ..core.models.seg_mlp import SegmentationOCR
 from ..core.tokenizer import TOKEN_LIST
 from ..core.decoders.ctc_decode import ctc_greedy_decode
 from ..core.parser import is_valid_token_stream
+from ..core.segmentation_improved import segment_and_prepare_improved
 
 router = APIRouter(prefix="/api/predict2", tags=["predict2"])
 
@@ -51,14 +53,46 @@ def _resolve_ckpt_path(run_id: Optional[str], checkpoint: Optional[str], ckpt_pa
     elif run_id and checkpoint:
         p = os.path.join("runs", run_id, checkpoint)
     elif run_id and not checkpoint:
-        c1 = os.path.join("runs", run_id, "crnn_final.pt")
-        c2 = os.path.join("runs", run_id, "checkpoint_latest.pt")
-        p = c1 if os.path.exists(c1) else c2
+        # Try to find any checkpoint in order of preference
+        candidates = [
+            os.path.join("runs", run_id, "crnn_final.pt"),
+            os.path.join("runs", run_id, "seg_mlp_final.pt"),
+            os.path.join("runs", run_id, "checkpoint_latest.pt"),
+            os.path.join("runs", run_id, "seg_mlp_best.pt"),
+        ]
+        p = None
+        for c in candidates:
+            if os.path.exists(c):
+                p = c
+                break
+        if not p:
+            raise HTTPException(404, f"No checkpoint found in run: {run_id}")
     else:
         raise HTTPException(400, "Provide either ckpt_path, or (run_id [+ checkpoint]).")
     if not p or not os.path.exists(p):
         raise HTTPException(404, f"Checkpoint not found: {p}")
     return p
+
+def _detect_model_type(state_dict_keys: List[str]) -> str:
+    """
+    Detect model type from state_dict keys.
+
+    Returns:
+        "M1" for CRNN-CTC
+        "M2" for Segmentation-MLP
+    """
+    keys_str = " ".join(state_dict_keys)
+
+    # Check for M2 (Segmentation-MLP) keys
+    if "classifier.network" in keys_str:
+        return "M2"
+
+    # Check for M1 (CRNN-CTC) keys
+    if "cnn" in keys_str and "rnn" in keys_str and "fc" in keys_str:
+        return "M1"
+
+    # Default to M1 if unclear
+    return "M1"
 
 def _otsu_threshold(arr_uint8: np.ndarray) -> int:
     """Простой Otsu без OpenCV. На входе: uint8 [H,W]. Возвращает порог 0..255."""
@@ -89,8 +123,7 @@ def _to_tensor_from_pil(pil: Image.Image, cfg: PredictDataCfg) -> Tuple[torch.Te
     """
     Готовим вход [1,1,H,W] строго как в трейне:
       - grayscale
-      - масштаб по высоте (img_h) с сохранением пропорций
-      - ограничение ширины (img_w_max)
+      - РАВНОМЕРНОЕ масштабирование (без искажения пропорций)
       - паддинг (right/center) на белый фон
       - invert (по умолчанию True)
       - опционально binarize='otsu'
@@ -101,24 +134,26 @@ def _to_tensor_from_pil(pil: Image.Image, cfg: PredictDataCfg) -> Tuple[torch.Te
     if pil.mode != "L":
         pil = pil.convert("L")
 
-    # 2) Aspect-aware resize
+    # 2) UNIFORM scaling - сохраняем пропорции без искажения
     target_h = int(cfg.img_h)
     max_w = int(cfg.img_w_max)
-    scale = target_h / float(pil.height)
+
+    # Вычисляем масштаб по обеим осям и берем минимальный
+    # чтобы гарантировать, что изображение поместится в target_h x max_w
+    scale_h = target_h / float(pil.height)
+    scale_w = max_w / float(pil.width)
+    scale = min(scale_h, scale_w)  # Равномерное масштабирование
+
     new_w = max(1, int(round(pil.width * scale)))
+    new_h = max(1, int(round(pil.height * scale)))
 
-    # Если шире лимита — пересчитываем по макс. ширине
-    if new_w > max_w:
-        scale = max_w / float(pil.width)
-        new_w = max_w
-        target_h = max(1, int(round(pil.height * scale)))
+    img_resized = pil.resize((new_w, new_h), Image.BILINEAR)
 
-    img_resized = pil.resize((new_w, target_h), Image.BILINEAR)
-
-    # 3) Паддинг на белый холст
+    # 3) Паддинг на белый холст с центрированием
     canvas = Image.new("L", (max_w, target_h), color=255)
     x0 = (max_w - new_w) // 2 if cfg.pad_mode == "center" else 0
-    canvas.paste(img_resized, (x0, 0))
+    y0 = (target_h - new_h) // 2  # Центрируем по вертикали
+    canvas.paste(img_resized, (x0, y0))
 
     # 4) Инверсия (чернила -> светлое на тёмном, как обучалось)
     arr_uint8 = np.asarray(canvas, dtype=np.uint8)
@@ -220,45 +255,156 @@ def predict2(req: PredictRequest):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     device_t = torch.device(device)
 
-    # Load model
-    blank_id = len(TOKEN_LIST)
-    num_classes = blank_id + 1
-    model = CRNN_CTC(num_classes=num_classes).to(device_t).eval()
+    # Load checkpoint
     try:
         state = torch.load(ckpt, map_location="cpu", weights_only=True)  # torch>=2.4
     except TypeError:
         state = torch.load(ckpt, map_location="cpu")                     # fallback для старых torch
-    model.load_state_dict(state["model"] if isinstance(state, dict) and "model" in state else state)
 
-    # Prepare image
-    pil = _load_image(req.image)
-    x, dbg_b64 = _to_tensor_from_pil(pil, req.data)
-    x = x.to(device_t)
+    # Extract model state_dict
+    model_state = state["model"] if isinstance(state, dict) and "model" in state else state
 
-    with torch.no_grad():
-        logits, T = model(x)  # [1, T, C]
-        if req.decode.type == "beam":
-            ids_batch = ctc_beam_search(logits, blank_id=blank_id, beam_width=max(1, req.decode.beam_width))
-        else:
-            ids_batch = ctc_greedy_decode(logits, blank_id=blank_id)
+    # Detect model type
+    model_type = _detect_model_type(list(model_state.keys()))
 
-    ids = ids_batch[0]
-    tokens = [TOKEN_LIST[i] for i in ids]
-    text = " ".join(tokens)
+    # === M1: CRNN-CTC ===
+    if model_type == "M1":
+        blank_id = len(TOKEN_LIST)
+        num_classes = blank_id + 1
+        model = CRNN_CTC(num_classes=num_classes).to(device_t).eval()
+        model.load_state_dict(model_state)
 
-    return {
-        "device": device,
-        "ckpt": ckpt.replace("\\", "/"),
-        "img_h": req.data.img_h,
-        "img_w_max": req.data.img_w_max,
-        "invert": req.data.invert,
-        "pad_mode": req.data.pad_mode,
-        "decoder": req.decode.type,
-        "decode": req.decode.dict(),
-        "beam_width": req.decode.beam_width if req.decode.type == "beam" else None,
-        "tokens": tokens,
-        "text": text,
-        "valid": bool(tokens and is_valid_token_stream(tokens)),
-        "T": int(T),
-        "preprocessed_b64": dbg_b64 if req.data.return_b64_preprocessed else None,
-    }
+        # Prepare image
+        pil = _load_image(req.image)
+        x, dbg_b64 = _to_tensor_from_pil(pil, req.data)
+        x = x.to(device_t)
+
+        with torch.no_grad():
+            logits, T = model(x)  # [1, T, C]
+            if req.decode.type == "beam":
+                ids_batch = ctc_beam_search(logits, blank_id=blank_id, beam_width=max(1, req.decode.beam_width))
+            else:
+                ids_batch = ctc_greedy_decode(logits, blank_id=blank_id)
+
+        ids = ids_batch[0]
+        tokens = [TOKEN_LIST[i] for i in ids]
+        text = " ".join(tokens)
+
+        return {
+            "model_type": "M1_CRNN_CTC",
+            "device": device,
+            "ckpt": ckpt.replace("\\", "/"),
+            "img_h": req.data.img_h,
+            "img_w_max": req.data.img_w_max,
+            "invert": req.data.invert,
+            "pad_mode": req.data.pad_mode,
+            "decoder": req.decode.type,
+            "beam_width": req.decode.beam_width if req.decode.type == "beam" else None,
+            "tokens": tokens,
+            "text": text,
+            "valid": bool(tokens and is_valid_token_stream(tokens)),
+            "T": int(T),
+            "preprocessed_b64": dbg_b64 if req.data.return_b64_preprocessed else None,
+        }
+
+    # === M2: Segmentation-MLP ===
+    elif model_type == "M2":
+        num_classes = len(TOKEN_LIST)
+        model = SegmentationOCR(num_classes=num_classes, input_size=32*32, dropout=0.3).to(device_t).eval()
+        model.load_state_dict(model_state)
+
+        # Load and prepare image for segmentation
+        pil = _load_image(req.image)
+        if pil.mode != "L":
+            pil = pil.convert("L")
+        img_arr = np.array(pil)
+
+        # Try IMPROVED segmentation first
+        segments = segment_and_prepare_improved(
+            img_arr,
+            target_size=(32, 32),
+            adaptive=True,
+            split_wide=False,
+            morph_strength="light"
+        )
+
+        # FALLBACK: If no segments found, try with more relaxed parameters
+        if not segments:
+            import cv2
+            # Try with much more relaxed parameters
+            segments = segment_and_prepare_improved(
+                img_arr,
+                target_size=(32, 32),
+                min_area=10,      # Very low threshold
+                max_area=50000,   # Very high threshold
+                adaptive=False,   # Don't use adaptive
+                split_wide=False,
+                morph_strength="light"
+            )
+
+            # Generate debug image
+            _, binary = cv2.threshold(img_arr, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+            if binary[0, 0] > 127:
+                binary = 255 - binary
+
+            # Convert to base64 for debugging
+            import io
+            from PIL import Image as PILImage
+            import base64
+
+            debug_img = PILImage.fromarray(binary)
+            buf = io.BytesIO()
+            debug_img.save(buf, format='PNG')
+            debug_b64 = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode('ascii')
+
+        if not segments:
+            return {
+                "model_type": "M2_Segmentation_MLP",
+                "device": device,
+                "ckpt": ckpt.replace("\\", "/"),
+                "tokens": [],
+                "text": "",
+                "valid": False,
+                "num_segments": 0,
+                "error": "No characters detected in image",
+                "debug_binary": debug_b64 if 'debug_b64' in locals() else None,
+                "image_size": {"width": int(pil.width), "height": int(pil.height)}
+            }
+
+        # Prepare batch of segments
+        seg_tensors = [torch.from_numpy(seg[0]).unsqueeze(0).to(device_t) for seg in segments]
+        batch_segs = torch.stack(seg_tensors)  # (num_segments, 1, H, W)
+
+        # Classify
+        with torch.no_grad():
+            logits = model(batch_segs)
+            pred_ids = torch.argmax(logits, dim=1).cpu().tolist()
+
+        tokens = [TOKEN_LIST[pid] if pid < len(TOKEN_LIST) else "?" for pid in pred_ids]
+        text = " ".join(tokens)
+
+        # Prepare segment info for visualization
+        segments_info = []
+        for idx, (_, bbox) in enumerate(segments):
+            x, y, w, h = bbox
+            segments_info.append({
+                "id": idx,
+                "bbox": {"x": int(x), "y": int(y), "w": int(w), "h": int(h)},
+                "token": tokens[idx] if idx < len(tokens) else "?",
+                "token_id": int(pred_ids[idx]) if idx < len(pred_ids) else -1
+            })
+
+        return {
+            "model_type": "M2_Segmentation_MLP",
+            "device": device,
+            "ckpt": ckpt.replace("\\", "/"),
+            "tokens": tokens,
+            "text": text,
+            "valid": bool(tokens and is_valid_token_stream(tokens)),
+            "num_segments": len(segments),
+            "segments": segments_info,  # NEW: Segment visualization data
+            "image_size": {"width": int(pil.width), "height": int(pil.height)}
+        }
+
+    else:
+        raise HTTPException(500, f"Unknown model type: {model_type}")

@@ -50,7 +50,7 @@ export function AdvancedSettings({ modelType, config, onChange }: AdvancedSettin
         className="flex items-center justify-between w-full text-left"
         onClick={() => setIsExpanded(!isExpanded)}
       >
-        <h2 className="text-xl font-semibold text-slate-700">Advanced Settings</h2>
+        <h2 className="text-xl font-semibold text-slate-700">Расширенные настройки</h2>
         <span className="text-slate-400">{isExpanded ? '▼' : '▶'}</span>
       </button>
 
@@ -58,7 +58,7 @@ export function AdvancedSettings({ modelType, config, onChange }: AdvancedSettin
         <div className="mt-4 space-y-4">
           {modelType === 'M1' && (
             <div className="border-l-4 border-emerald-500 pl-4 space-y-3">
-              <h3 className="font-medium text-slate-700">M1 (CRNN-CTC) Settings</h3>
+              <h3 className="font-medium text-slate-700">Настройки M1 (CRNN-CTC)</h3>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1">
                   Weight Decay
@@ -71,7 +71,7 @@ export function AdvancedSettings({ modelType, config, onChange }: AdvancedSettin
                   onChange={(e) => updateM1Advanced('weight_decay', parseFloat(e.target.value))}
                 />
                 <p className="text-xs text-slate-500 mt-1">
-                  L2 regularization strength (typically 0.001-0.1)
+                  Сила L2 регуляризации (обычно 0.001-0.1)
                 </p>
               </div>
             </div>

@@ -314,21 +314,62 @@ def start_training(config: dict):
 @router.get("/jobs/{job_id}")
 def get_job_status(job_id: str):
     """Get training job status and progress."""
-    if job_id not in RUNS:
+    # Check active runs first
+    if job_id in RUNS:
+        run = RUNS[job_id]
+        return JSONResponse(
+            {
+                "job_id": job_id,
+                "run_name": run.get("run_name", job_id),
+                "model_type": run.get("model_type", "M1"),
+                "status": run["status"],
+                "started_at": run.get("started_at", datetime.now().isoformat()),
+                "current_epoch": run.get("epoch", 0),
+                "progress": run.get("epoch", 0),
+                "best_metric": run.get("best_metric"),
+                "last_checkpoint": run.get("last_checkpoint"),
+            },
+            headers={"Content-Type": "application/json; charset=utf-8"}
+        )
+
+    # Check filesystem for finished runs
+    run_dir = os.path.join("runs", job_id)
+    config_file = os.path.join(run_dir, "config.json")
+    events_file = os.path.join(run_dir, "events.jsonl")
+
+    if not os.path.exists(run_dir) or not os.path.exists(config_file):
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
-    run = RUNS[job_id]
+    # Load config
+    with open(config_file, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+
+    # Determine status from events.jsonl
+    status = "FINISHED"
+    current_epoch = 0
+    if os.path.exists(events_file):
+        with open(events_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                try:
+                    event = json.loads(line)
+                    if event.get("type") == "status":
+                        status = event.get("status", "FINISHED")
+                    if event.get("event") == "epoch_end":
+                        current_epoch = event.get("epoch", 0)
+                except:
+                    continue
+
     return JSONResponse(
         {
             "job_id": job_id,
-            "run_name": run.get("run_name", job_id),
-            "model_type": run.get("model_type", "M1"),
-            "status": run["status"],
-            "started_at": run.get("started_at", datetime.now().isoformat()),
-            "current_epoch": run.get("epoch", 0),
-            "progress": run.get("epoch", 0),
-            "best_metric": run.get("best_metric"),
-            "last_checkpoint": run.get("last_checkpoint"),
+            "run_name": config.get("run_name", job_id),
+            "model_type": config.get("model_type", "M1"),
+            "status": status,
+            "started_at": config.get("started_at", datetime.now().isoformat()),
+            "current_epoch": current_epoch,
+            "progress": current_epoch,
+            "best_metric": None,
+            "last_checkpoint": None,
         },
         headers={"Content-Type": "application/json; charset=utf-8"}
     )
@@ -408,16 +449,35 @@ async def stream_training_events(job_id: str):
                         yield f"event: metric\ndata: {json.dumps(metric_data, ensure_ascii=False)}\n\n"
 
                     elif event_type == "epoch_end":
+                        # Update run epoch tracking
+                        current_epoch = event.get("epoch", 0)
+                        run["epoch"] = current_epoch
+
+                        # For M2: metrics are directly in event, not nested in "metrics"
                         metric_data = {
-                            "epoch": event.get("epoch", 0),
-                            "train_loss": event.get("metrics", {}).get("train_loss", 0),
-                            "val_loss": event.get("metrics", {}).get("val_loss", 0),
-                            "cer": event.get("metrics", {}).get("cer", 0),
-                            "wer": event.get("metrics", {}).get("wer", 0),
-                            "exact": event.get("metrics", {}).get("exact", 0),
-                            "lr": event.get("metrics", {}).get("lr", 0.001)
+                            "epoch": current_epoch,
+                            "train_loss": event.get("train_loss", 0),
+                            "val_loss": event.get("val_loss", 0) if "val_loss" in event else 0,
+                            "cer": event.get("cer", 0) if "cer" in event else 0,
+                            "wer": event.get("wer", 0) if "wer" in event else 0,
+                            "exact": event.get("exact", 0) if "exact" in event else 0,
+                            "lr": event.get("lr", 0.001),
+                            # M2 specific metrics
+                            "train_char_acc": event.get("train_char_acc", 0),
+                            "val_char_acc": event.get("val_char_acc", 0),
+                            "val_seq_acc": event.get("val_seq_acc", 0),
+                            "val_seg_acc": event.get("val_seg_acc", 0)
                         }
                         yield f"event: metric\ndata: {json.dumps(metric_data, ensure_ascii=False)}\n\n"
+
+                    elif event_type == "dataset_stats":
+                        # Send dataset stats as log for display
+                        stats_msg = f"Dataset loaded: {event.get('train_samples', 0)} train, {event.get('val_samples', 0)} val chars"
+                        log_data = {
+                            "ts": datetime.now().isoformat(),
+                            "line": stats_msg
+                        }
+                        yield f"event: log\ndata: {json.dumps(log_data, ensure_ascii=False)}\n\n"
 
                     elif event_type == "sample_pred":
                         # Forward sample predictions with images
@@ -427,9 +487,25 @@ async def stream_training_events(job_id: str):
                         }
                         yield f"event: sample_pred\ndata: {json.dumps(sample_data, ensure_ascii=False)}\n\n"
 
+                    elif event_type == "status":
+                        # Status update (RUNNING, STOPPING, FINISHED, etc)
+                        new_status = event.get("status", "UNKNOWN")
+                        run["status"] = new_status
+                        status_data = {"status": new_status}
+                        yield f"event: status\ndata: {json.dumps(status_data, ensure_ascii=False)}\n\n"
+
+                        # Also log it
+                        log_data = {
+                            "ts": datetime.now().isoformat(),
+                            "line": event.get("message", f"Status: {new_status}")
+                        }
+                        yield f"event: log\ndata: {json.dumps(log_data, ensure_ascii=False)}\n\n"
+
                     elif event_type in ["finished", "error", "stopped"]:
                         status_map = {"finished": "FINISHED", "error": "FAILED", "stopped": "STOPPED"}
-                        status_data = {"status": status_map.get(event_type, "UNKNOWN")}
+                        new_status = status_map.get(event_type, "UNKNOWN")
+                        run["status"] = new_status
+                        status_data = {"status": new_status}
                         yield f"event: status\ndata: {json.dumps(status_data, ensure_ascii=False)}\n\n"
 
                         # Also send as log

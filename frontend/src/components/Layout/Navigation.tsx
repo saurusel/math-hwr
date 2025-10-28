@@ -1,10 +1,7 @@
 import { Link, useLocation } from 'react-router-dom';
-import { LanguageSwitcher } from './LanguageSwitcher';
-import { useTranslation } from '../../i18n/useTranslation';
 
 export function Navigation() {
   const location = useLocation();
-  const { t } = useTranslation();
 
   const isActive = (path: string) => {
     if (path === '/') {
@@ -30,14 +27,13 @@ export function Navigation() {
             </Link>
             <div className="flex gap-2">
               <Link to="/" className={linkClass('/')}>
-                🎨 {t('playground')}
+                🎨 Распознавание
               </Link>
               <Link to="/train/experiments" className={linkClass('/train')}>
-                🧪 {t('training')}
+                🧪 Обучение
               </Link>
             </div>
           </div>
-          <LanguageSwitcher />
         </div>
       </div>
     </nav>

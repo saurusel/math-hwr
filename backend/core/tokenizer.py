@@ -10,20 +10,27 @@
 #
 # Total: 198 unique tokens
 #
-# Load grouped vocabulary from file
+# Load vocabulary from file
 import os
-_vocab_path = os.path.join(os.path.dirname(__file__), "..", "..", "grouped_vocab.txt")
-if os.path.exists(_vocab_path):
-    with open(_vocab_path, "r", encoding="utf-8") as f:
+
+# Try simple vocab first (18 tokens - for new flat dataset)
+_simple_vocab_path = os.path.join(os.path.dirname(__file__), "..", "..", "simple_vocab.txt")
+_grouped_vocab_path = os.path.join(os.path.dirname(__file__), "..", "..", "grouped_vocab.txt")
+
+if os.path.exists(_simple_vocab_path):
+    # Use simple flat vocabulary
+    with open(_simple_vocab_path, "r", encoding="utf-8") as f:
+        TOKEN_LIST = [line.strip() for line in f if line.strip()]
+elif os.path.exists(_grouped_vocab_path):
+    # Fallback to grouped vocabulary (for old dataset)
+    with open(_grouped_vocab_path, "r", encoding="utf-8") as f:
         TOKEN_LIST = [line.strip() for line in f if line.strip()]
 else:
-    # Fallback to basic vocab if file not found
+    # Fallback to basic vocab if no files found
     TOKEN_LIST = [
         "0","1","2","3","4","5","6","7","8","9",
         "x","y","z",
-        "+","-","*","÷","=",
-        "(",")",
-        "^"
+        "+","-","*","÷","="
     ]
 
 TOK2ID = {t:i for i,t in enumerate(TOKEN_LIST)}

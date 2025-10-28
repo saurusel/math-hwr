@@ -5,6 +5,7 @@ import { CheckpointPicker } from '../components/Controls/CheckpointPicker';
 import { SubmitBar } from '../components/Controls/SubmitBar';
 import { PredictionView } from '../components/ResultPanel/PredictionView';
 import { DebugImages } from '../components/ResultPanel/DebugImages';
+import { SegmentationView } from '../components/ResultPanel/SegmentationView';
 import { predictM1, predictM2, predictM3, PredictResponse } from '../api/predict';
 import { AvailableModel } from '../api/models';
 import { APIError } from '../api/client';
@@ -24,6 +25,7 @@ export function Playground() {
 
   const canvasDataURLRef = useRef<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [loadedImageURL, setLoadedImageURL] = useState<string>('');
 
   const { toasts, removeToast, error, success } = useToast();
 
@@ -34,6 +36,8 @@ export function Playground() {
   const handleClear = () => {
     setResult(null);
     setInferenceTime(undefined);
+    canvasDataURLRef.current = '';
+    setLoadedImageURL('');
   };
 
   const handleResetView = () => {
@@ -49,28 +53,32 @@ export function Playground() {
     if (!file) return;
 
     if (!file.type.match(/^image\/(png|jpeg|jpg)$/)) {
-      error('Please select a PNG or JPG image');
+      error('Пожалуйста, выберите PNG или JPG изображение');
       return;
     }
 
     const reader = new FileReader();
     reader.onload = (event) => {
       const dataURL = event.target?.result as string;
+      setLoadedImageURL(dataURL);
       canvasDataURLRef.current = dataURL;
-      // Note: In a real implementation, you'd load this onto the canvas
-      success('Image loaded successfully');
+      success('Изображение загружено успешно');
     };
     reader.readAsDataURL(file);
   };
 
+  const handleImageLoad = (dataURL: string) => {
+    canvasDataURLRef.current = dataURL;
+  };
+
   const handleRecognize = async () => {
     if (!canvasDataURLRef.current) {
-      error('Please draw or load an image first');
+      error('Пожалуйста, нарисуйте или загрузите изображение');
       return;
     }
 
     if (!selectedCheckpoint) {
-      error('Please select a trained model first');
+      error('Пожалуйста, выберите обученную модель');
       return;
     }
 
@@ -105,17 +113,17 @@ export function Playground() {
       console.log('Prediction response:', response); // Debug logging
 
       if (response.text && response.text.length > 0) {
-        success('Recognition completed');
+        success('Распознавание завершено');
       } else {
-        error('Model returned empty prediction. Model may not be trained properly.');
+        error('Модель вернула пустое предсказание. Модель может быть не обучена должным образом.');
       }
     } catch (err) {
       if (err instanceof APIError) {
-        error(`Recognition failed: ${err.message}`);
+        error(`Ошибка распознавания: ${err.message}`);
       } else if (err instanceof Error) {
-        error(`Error: ${err.message}`);
+        error(`Ошибка: ${err.message}`);
       } else {
-        error('An unknown error occurred');
+        error('Произошла неизвестная ошибка');
       }
     } finally {
       setIsLoading(false);
@@ -127,9 +135,9 @@ export function Playground() {
       <div className="max-w-7xl mx-auto space-y-4">
         {/* Header */}
         <div>
-          <h1 className="text-3xl font-bold text-slate-800">Math HWR — Playground</h1>
+          <h1 className="text-3xl font-bold text-slate-800">Math HWR — Распознавание</h1>
           <p className="text-slate-600 mt-1">
-            Draw mathematical expressions or load an image to recognize
+            Рисуйте математические выражения или загрузите изображение для распознавания
           </p>
         </div>
 
@@ -157,9 +165,9 @@ export function Playground() {
         {/* Canvas Area */}
         <div className="bg-white rounded-xl shadow p-4">
           <div className="text-sm text-slate-600 mb-3 space-y-1">
-            <div>💡 <strong>Space + drag:</strong> pan</div>
-            <div>💡 <strong>Mouse wheel:</strong> zoom (centered at cursor)</div>
-            <div>💡 <strong>Eraser:</strong> shows circular outline</div>
+            <div>💡 <strong>Пробел + перетаскивание:</strong> панорамирование</div>
+            <div>💡 <strong>Колесо мыши:</strong> масштабирование (по центру курсора)</div>
+            <div>💡 <strong>Ластик:</strong> показывает круглый контур</div>
           </div>
           <div className="overflow-auto border border-slate-200 rounded-lg" style={{ maxHeight: 400 }}>
             <CanvasBoard
@@ -170,6 +178,8 @@ export function Playground() {
               tool={tool}
               onExport={handleExport}
               onClear={handleClear}
+              onImageLoad={handleImageLoad}
+              loadImageURL={loadedImageURL}
             />
           </div>
         </div>
@@ -190,7 +200,34 @@ export function Playground() {
             tokens={result?.tokens}
             device={result?.device}
             ckpt={result?.ckpt}
+            error={result?.error}
+            modelType={result?.model_type}
           />
+
+          {/* Debug binary image for M2 segmentation failures */}
+          {result?.debug_binary && (
+            <div className="bg-white rounded-xl shadow p-4">
+              <h3 className="text-sm font-medium text-slate-700 mb-2">
+                Debug: Binarized Image (what segmentation sees)
+              </h3>
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <img src={result.debug_binary} alt="Binarized" className="max-w-full h-auto" />
+              </div>
+              <div className="text-xs text-slate-500 mt-2">
+                This is the binarized image after Otsu thresholding. If you don't see clear white characters on black background, the image may need adjustment.
+              </div>
+            </div>
+          )}
+
+          {/* Segmentation Visualization for M2 models */}
+          {result?.segments && result?.segments.length > 0 && result?.image_size && canvasDataURLRef.current && (
+            <SegmentationView
+              imageDataURL={canvasDataURLRef.current}
+              segments={result.segments}
+              imageSize={result.image_size}
+            />
+          )}
+
           {result?.preprocessed_b64 && <DebugImages preprocessedB64={result.preprocessed_b64} />}
         </div>
 

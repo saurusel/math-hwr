@@ -12,6 +12,7 @@ interface CanvasBoardProps {
   onExport: (dataURL: string) => void;
   onClear: () => void;
   onImageLoad?: (dataURL: string) => void;
+  loadImageURL?: string;
 }
 
 export function CanvasBoard({
@@ -23,6 +24,7 @@ export function CanvasBoard({
   onExport,
   onClear,
   onImageLoad,
+  loadImageURL,
 }: CanvasBoardProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
@@ -234,6 +236,13 @@ export function CanvasBoard({
     e.preventDefault();
     // Zoom handled by parent component
   };
+
+  // Load image when loadImageURL changes
+  useEffect(() => {
+    if (loadImageURL) {
+      loadImage(loadImageURL);
+    }
+  }, [loadImageURL, loadImage]);
 
   // Expose methods to parent
   useEffect(() => {

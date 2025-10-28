@@ -34,6 +34,17 @@ export const useTrainingStore = create<TrainingState>((set) => ({
   addMetric: (metric) =>
     set((state) => {
       console.log('[Store] Adding metric:', metric); // Debug logging
+
+      // Check for duplicates - don't add if epoch already exists
+      const isDuplicate = state.metrics.some(
+        (m) => m.epoch === metric.epoch
+      );
+
+      if (isDuplicate) {
+        console.log('[Store] Skipping duplicate metric for epoch:', metric.epoch);
+        return state; // Don't update if duplicate
+      }
+
       return {
         metrics: [...state.metrics, metric],
         // Update currentJob epoch from metric

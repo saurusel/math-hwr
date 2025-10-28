@@ -20,6 +20,7 @@ export interface TrainingConfig {
     optimizer: string;
     scheduler: string;
     seed: number;
+    max_samples?: number;
     advanced?: {
       m1?: { weight_decay?: number };
       m2?: {
@@ -52,11 +53,20 @@ export interface TrainingJob {
 export interface MetricEvent {
   epoch: number;
   train_loss: number;
-  val_loss: number;
+  val_loss?: number;
+  // M1 metrics (CRNN-CTC)
   cer?: number;
   wer?: number;
   exact?: number;
   valid?: number;
+  // M2 metrics (Segmentation-MLP)
+  train_char_acc?: number;
+  val_char_acc?: number;
+  val_seq_acc?: number;
+  val_seg_acc?: number;
+  best_char_acc?: number;
+  best_seq_acc?: number;
+  // Common
   lr: number;
   epoch_time_sec?: number;
   samples_processed?: number;

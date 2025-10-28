@@ -58,7 +58,7 @@ class EventLogger:
         self._write(event)
 
     def log_sample_pred(self, epoch: int, items: List[Dict[str, Any]]):
-        """Log sample predictions (without images for file size)."""
+        """Log sample predictions WITH images (base64)."""
         event = {
             "type": "sample_pred",
             "epoch": epoch,
@@ -68,7 +68,8 @@ class EventLogger:
                     "id": item["id"],
                     "target": item["target"],
                     "pred": item["pred"],
-                    "ok": item.get("ok", False)
+                    "ok": item.get("ok", False),
+                    "image_b64": item.get("image_b64", "")  # Include images!
                 }
                 for item in items
             ],
